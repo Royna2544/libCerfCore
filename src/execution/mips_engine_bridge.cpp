@@ -135,6 +135,10 @@ cerfengine::MipsCp0Decision MipsEngineBridge::MipsCp0(uint32_t rd) {
     return emu_.Get<MipsCp0Model>().Decide(rd);
 }
 
+cerfengine::MipsCp0Decision MipsEngineBridge::MipsCp0(uint32_t rd, uint32_t sel) {
+    return emu_.Get<MipsCp0Model>().Decide(rd, sel);
+}
+
 void MipsEngineBridge::RegisterResetListener(std::function<void()> fn) {
     reset_listeners_.Add(std::move(fn));
 }

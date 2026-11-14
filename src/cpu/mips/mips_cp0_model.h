@@ -13,6 +13,7 @@ public:
     using Service::Service;
 
     virtual cerfengine::MipsCp0Decision Decide(uint32_t rd) = 0;
+    virtual cerfengine::MipsCp0Decision Decide(uint32_t rd, uint32_t sel);
 
 protected:
     static bool RegWritable(uint32_t rd) {

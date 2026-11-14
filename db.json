@@ -656,6 +656,10 @@
         {
           "id": "mips4",
           "name": "MIPS IV"
+        },
+        {
+          "id": "mips32r1",
+          "name": "MIPS32 Release 1"
         }
       ]
     },
