@@ -28,7 +28,7 @@ public:
         const auto& config = emu_.Get<DeviceConfig>();
         const auto path = ResolveDeviceFile(config.device_name, config.storage_nand);
         store_.Open(path);
-        uid_.Open(path + ".uid");
+        uid_.Open(path + ".uid", path + ".otp");
         chip_.SetWriteProtect(false);
         emu_.Get<PeripheralDispatcher>().Register(this);
         emu_.Get<GuestCpuReset>().RegisterResetListener([this](ResetLineKind kind) {
