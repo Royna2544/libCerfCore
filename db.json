@@ -2658,7 +2658,7 @@
       "name": "iNavi GN 2010 (Au1374)",
       "short_name": "iNavi GN 2010",
       "board_family_id": "inavi_gn2010",
-      "support_level": "no_support"
+      "support_level": "bootable_partial"
     },
     {
       "id": "devemu",
