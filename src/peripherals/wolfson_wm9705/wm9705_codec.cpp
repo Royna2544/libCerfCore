@@ -150,6 +150,9 @@ void Wm9705Codec::WriteReg(uint32_t reg, uint16_t value, uint64_t frame) {
     }
     /* Wolfson WM9705 page 42: "INDEX 7AH - DIGITISER DATA WORD OUTPUT - READ REGISTER ONLY". */
     if (reg == kRegDigitiserRd) return;
+    if (reg == kRegPowerdown) {
+        value = static_cast<uint16_t>((value & 0xFF00u) | (reg_[reg] & 0x00FFu));
+    }
     if (WriteRateRegister(reg, value)) return;
     Poke(reg, value);
     if (reg == kRegDigitiser1) stalled_poll_ = false;
