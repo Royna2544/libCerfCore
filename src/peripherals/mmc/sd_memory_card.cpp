@@ -1,0 +1,250 @@
+#include "sd_memory_card.h"
+
+#include "emmc_register_encoding.h"
+#include <cerfcore/core/cerf_emulator.h>
+#include <cerfcore/core/fatal.h>
+#include <cerfcore/core/log.h>
+#include <cerfcore/platform/host_file.h>
+#include <cerfcore/socs/guest_cpu_reset.h>
+#include <cerfcore/state/state_stream.h>
+
+#include <algorithm>
+#include <cstring>
+
+namespace cerfcore {
+
+void SdMemoryCard::OnReady() {
+    const auto path = ImagePath();
+    host_platform::HostFile file;
+    uint64_t size = 0u;
+    if (!file.Open(path, host_platform::FileMode::kReadExisting) || !file.Size(size) ||
+        size < 4096u || size > 0x40000000u || (size & 511u) != 0u) {
+        emu_.Get<Fatal>().UserError("SD image open/geometry path=%s bytes=%llu", path.c_str(),
+                                   static_cast<unsigned long long>(size));
+    }
+    cells_.resize(static_cast<size_t>(size));
+    uint32_t done = 0u;
+    if (!file.Read(cells_.data(), static_cast<uint32_t>(size), done) || done != size) {
+        emu_.Get<Fatal>().UserError("SD image short read path=%s", path.c_str());
+    }
+    uint32_t csd[4]{};
+    BuildCsd(csd);
+    emu_.Get<GuestCpuReset>().RegisterResetListener([this](ResetLineKind) { Reset(); });
+    LOG(Boot, "SD slot=%u input=%s bytes=%u volatile=1\n", SlotIndex(), path.c_str(), done);
+}
+
+void SdMemoryCard::Reset() {
+    state_ = 0u;
+    next_address_ = erase_start_ = erase_end_ = written_blocks_ = bus_width_ = 0u;
+    app_ = multi_read_ = multi_write_ = memory_read_ = false;
+    data_.clear();
+}
+
+uint32_t SdMemoryCard::Status(uint32_t state) const { return (state << 9u) | 0x100u; }
+
+void SdMemoryCard::BuildCsd(uint32_t response[4]) {
+    std::fill_n(response, 4u, 0u);
+    const auto set = [response](uint32_t low, uint32_t width, uint32_t value) {
+        for (uint32_t i = 0u; i < width; ++i) {
+            response[3u - (low + i) / 32u] |= ((value >> i) & 1u) << ((low + i) % 32u);
+        }
+    };
+    uint32_t multiplier = 0u;
+    for (; multiplier < 8u; ++multiplier) {
+        const uint32_t unit = 512u << (multiplier + 2u);
+        if (cells_.size() % unit == 0u && cells_.size() / unit <= 4096u) break;
+    }
+    if (multiplier == 8u) emu_.Get<Fatal>().UserError("SD SDSC capacity=%llu", static_cast<unsigned long long>(cells_.size()));
+    set(112u, 8u, 0x0Eu);
+    set(96u, 8u, 0x32u);
+    set(84u, 12u, 0x135u);
+    set(80u, 4u, 9u);
+    set(62u, 12u, static_cast<uint32_t>(cells_.size() / (512u << (multiplier + 2u))) - 1u);
+    set(47u, 3u, multiplier);
+    set(46u, 1u, 1u);
+    set(26u, 3u, 2u);
+    set(22u, 4u, 9u);
+    SdCardCid bytes{};
+    for (uint32_t i = 0u; i < 16u; ++i) bytes[i] = static_cast<uint8_t>(response[i / 4u] >> ((3u - i % 4u) * 8u));
+    EncodeEmmcCid(bytes, response);
+}
+
+MmcCommandResult SdMemoryCard::Command(uint8_t index, uint32_t argument, uint32_t response[4]) {
+    const auto before = state_;
+    std::fill_n(response, 4u, 0u);
+    response[0u] = Status(before);
+    const bool application = app_;
+    app_ = false;
+    if (index == 0u) { Reset(); return MmcCommandResult::NoResponse; }
+    if (application) return Application(index, argument, response);
+    switch (index) {
+    case 1u: case 5u: case 8u: case 52u: case 53u: return MmcCommandResult::NoResponse;
+    case 55u:
+        if ((argument >> 16u) != (state_ < 2u ? 0u : 1u)) return MmcCommandResult::NoResponse;
+        app_ = true;
+        response[0u] |= 0x20u;
+        return MmcCommandResult::Short;
+    case 2u:
+        if (state_ != 1u) break;
+        state_ = 2u;
+        EncodeEmmcCid(CardCid(), response);
+        return MmcCommandResult::Long;
+    case 3u:
+        if (state_ != 2u && state_ != 3u) break;
+        state_ = 3u;
+        response[0u] = 0x10000u | (Status(before) & 0xFFFFu);
+        return MmcCommandResult::Short;
+    case 7u:
+        if ((argument >> 16u) == 1u && state_ == 3u) { state_ = 4u; return MmcCommandResult::Short; }
+        if ((argument >> 16u) != 1u) { EndDataPhase(); state_ = 3u; return MmcCommandResult::NoResponse; }
+        break;
+    case 9u: case 10u:
+        if ((argument >> 16u) != 1u) return MmcCommandResult::NoResponse;
+        if (state_ != 3u) break;
+        if (index == 9u) BuildCsd(response);
+        else EncodeEmmcCid(CardCid(), response);
+        return MmcCommandResult::Long;
+    case 12u:
+        if (state_ != 5u && state_ != 6u) break;
+        EndDataPhase();
+        return MmcCommandResult::Short;
+    case 13u:
+        if ((argument >> 16u) != 1u) return MmcCommandResult::NoResponse;
+        return MmcCommandResult::Short;
+    case 16u:
+        if (state_ != 4u) break;
+        if (argument != 512u) response[0u] |= 1u << 29u;
+        return MmcCommandResult::Short;
+    case 17u: case 18u:
+        if (state_ != 4u) break;
+        if (!ValidAddress(argument, response)) return MmcCommandResult::Short;
+        state_ = 5u;
+        memory_read_ = true;
+        multi_read_ = index == 18u;
+        next_address_ = argument;
+        ReadBlock();
+        return MmcCommandResult::Short;
+    case 24u: case 25u:
+        if (state_ != 4u) break;
+        if (!ValidAddress(argument, response)) return MmcCommandResult::Short;
+        state_ = 6u;
+        multi_write_ = index == 25u;
+        next_address_ = argument;
+        return MmcCommandResult::Short;
+    case 32u: case 33u:
+        if (state_ != 4u) break;
+        if (!ValidAddress(argument, response)) return MmcCommandResult::Short;
+        (index == 32u ? erase_start_ : erase_end_) = argument;
+        return MmcCommandResult::Short;
+    case 38u:
+        if (state_ != 4u || erase_end_ < erase_start_) break;
+        std::fill(cells_.begin() + erase_start_, cells_.begin() + erase_end_ + 512u, 0u);
+        return MmcCommandResult::Short;
+    default: break;
+    }
+    emu_.Get<Fatal>().Die("SD command=%u arg=%08X state=%u", index, argument, state_);
+}
+
+MmcCommandResult SdMemoryCard::Application(uint8_t index, uint32_t argument, uint32_t response[4]) {
+    response[0u] |= 0x20u;
+    if (index == 41u && state_ == 0u) {
+        response[0u] = 0x80FF8000u;
+        if (argument != 0u) state_ = (argument & 0xFF8000u) != 0u ? 1u : 8u;
+        return MmcCommandResult::Short;
+    }
+    if (state_ != 4u) emu_.Get<Fatal>().Die("SD ACMD=%u state=%u", index, state_);
+    switch (index) {
+    case 6u:
+        if (argument != 0u && argument != 2u) response[0u] |= 1u << 22u;
+        else bus_width_ = argument;
+        return MmcCommandResult::Short;
+    case 23u: case 42u: return MmcCommandResult::Short;
+    case 51u: data_ = {0u, 0x05u, 0u, 0u, 0u, 0u, 0u, 0u}; break;
+    case 13u:
+        data_.assign(64u, 0u);
+        data_[0u] = static_cast<uint8_t>(bus_width_ << 6u);
+        break;
+    case 22u:
+        data_.resize(4u);
+        for (uint32_t i = 0u; i < 4u; ++i) data_[i] = static_cast<uint8_t>(written_blocks_ >> ((3u - i) * 8u));
+        break;
+    default: emu_.Get<Fatal>().Die("SD ACMD=%u arg=%08X", index, argument);
+    }
+    state_ = 5u;
+    memory_read_ = multi_read_ = false;
+    return MmcCommandResult::Short;
+}
+
+bool SdMemoryCard::ValidAddress(uint32_t address, uint32_t response[4]) {
+    if ((address & 511u) != 0u) { response[0u] |= 1u << 30u; return false; }
+    if (static_cast<uint64_t>(address) + 512u > cells_.size()) { response[0u] |= 1u << 31u; return false; }
+    return true;
+}
+
+void SdMemoryCard::ReadBlock() {
+    if (static_cast<uint64_t>(next_address_) + 512u > cells_.size()) {
+        emu_.Get<Fatal>().Die("SD read offset=%08X", next_address_);
+    }
+    data_.assign(cells_.begin() + next_address_, cells_.begin() + next_address_ + 512u);
+    next_address_ += 512u;
+}
+
+void SdMemoryCard::NextBlock() {
+    if (memory_read_ && multi_read_) ReadBlock();
+    else EndDataPhase();
+}
+
+void SdMemoryCard::EndDataPhase() {
+    data_.clear();
+    multi_read_ = multi_write_ = memory_read_ = false;
+    if (state_ == 5u || state_ == 6u) state_ = 4u;
+}
+
+void SdMemoryCard::ReceiveBlock(const uint8_t* data, uint32_t bytes) {
+    if (state_ != 6u || bytes != 512u || static_cast<uint64_t>(next_address_) + bytes > cells_.size()) {
+        emu_.Get<Fatal>().Die("SD write offset=%08X bytes=%u state=%u", next_address_, bytes, state_);
+    }
+    std::memcpy(cells_.data() + next_address_, data, bytes);
+    next_address_ += bytes;
+    ++written_blocks_;
+    if (!multi_write_) state_ = 4u;
+}
+
+void SdMemoryCard::SaveState(StateWriter& w) {
+    w.Write("state", state_);
+    w.Write("next_address", next_address_);
+    w.Write("erase_start", erase_start_);
+    w.Write("erase_end", erase_end_);
+    w.Write("written_blocks", written_blocks_);
+    w.Write("bus_width", bus_width_);
+    w.Write("app", app_);
+    w.Write("multi_read", multi_read_);
+    w.Write("multi_write", multi_write_);
+    w.Write("memory_read", memory_read_);
+    w.WriteBytes("cells", cells_.data(), cells_.size());
+    w.Write("data_size", static_cast<uint32_t>(data_.size()));
+    w.WriteBytes("data", data_.data(), data_.size());
+}
+
+void SdMemoryCard::RestoreState(StateReader& r) {
+    r.Read("state", state_);
+    r.Read("next_address", next_address_);
+    r.Read("erase_start", erase_start_);
+    r.Read("erase_end", erase_end_);
+    r.Read("written_blocks", written_blocks_);
+    r.Read("bus_width", bus_width_);
+    r.Read("app", app_);
+    r.Read("multi_read", multi_read_);
+    r.Read("multi_write", multi_write_);
+    r.Read("memory_read", memory_read_);
+    r.ReadBytes("cells", cells_.data(), cells_.size());
+    uint32_t size = 0u;
+    r.Read("data_size", size);
+    if (state_ > 8u || size > 512u || next_address_ > cells_.size() ||
+        erase_start_ > cells_.size() - 512u || erase_end_ > cells_.size() - 512u ||
+        (bus_width_ != 0u && bus_width_ != 2u)) r.Reject("SD protocol state");
+    data_.resize(size);
+    r.ReadBytes("data", data_.data(), data_.size());
+}
+
+}
