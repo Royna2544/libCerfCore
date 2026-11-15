@@ -15,8 +15,8 @@ public:
     using BootMode::BootMode;
 
     bool ShouldRegister() override {
-        return emu_.Get<BoardContext>().GetRomPlacingMode()
-            == RomPlacingMode::FlatContainer;
+        const auto mode = emu_.Get<BoardContext>().GetRomPlacingMode();
+        return mode == RomPlacingMode::FlatContainer || mode == RomPlacingMode::NandPrimaryXip;
     }
 
     /* ARM ARM DDI 0406C.c A2.3.2 BXWritePC(), p. A2-47: "BranchTo(address<31:1>

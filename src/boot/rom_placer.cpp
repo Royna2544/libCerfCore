@@ -21,8 +21,13 @@ namespace cerfcore {
 REGISTER_SERVICE(RomPlacer);
 
 bool RomPlacer::ShouldRegister() {
-    return emu_.Get<BoardContext>().GetRomPlacingMode()
-        == RomPlacingMode::FlatContainer;
+    const auto mode = emu_.Get<BoardContext>().GetRomPlacingMode();
+    return mode == RomPlacingMode::FlatContainer || mode == RomPlacingMode::NandPrimaryXip;
+}
+
+bool RomPlacer::LoadsPartition(const ParsedRom& rom) {
+    return emu_.Get<BoardContext>().GetRomPlacingMode() != RomPlacingMode::NandPrimaryXip ||
+           &rom == &emu_.Get<RomParserService>().Primary();
 }
 
 bool RomPlacer::IsVolatilePa(uint32_t pa) {
@@ -40,6 +45,8 @@ void RomPlacer::PlaceRomXips(const ParsedRom& rom, bool volatile_only) {
 
     for (size_t i = 0; i < rom.xips.size(); ++i) {
         const auto& xip = rom.xips[i];
+        if (emu_.Get<BoardContext>().GetRomPlacingMode() == RomPlacingMode::NandPrimaryXip &&
+            !xip.toc.romhdr.ImageContains(rom.entry_va)) continue;
         const uint32_t physfirst = xip.toc.romhdr.physfirst;
         const uint32_t physlast  = xip.toc.romhdr.physlast;
         if (physlast <= physfirst) continue;
@@ -172,7 +179,9 @@ void RomPlacer::OnReady() {
     }
 
     for (const auto& rom : parser.Loaded()) {
+        if (!LoadsPartition(rom)) continue;
         PlaceRomXips(rom, /*volatile_only=*/false);
+        if (emu_.Get<BoardContext>().GetRomPlacingMode() == RomPlacingMode::NandPrimaryXip) continue;
 
         if (rom.is_b000ff) {
             /* Add the section bytes past every XIP's physfirst..physlast (the
@@ -238,8 +247,10 @@ void RomPlacer::OnReady() {
 
     emu_.Get<GuestColdBoot>().RegisterReplay([this] {
         for (const auto& rom : emu_.Get<RomParserService>().Loaded()) {
+            if (!LoadsPartition(rom)) continue;
             PlaceRomXips(rom, /*volatile_only=*/true);
-            if (rom.is_b000ff)
+            if (rom.is_b000ff &&
+                emu_.Get<BoardContext>().GetRomPlacingMode() != RomPlacingMode::NandPrimaryXip)
                 PlaceB000FFSections(rom, /*volatile_only=*/true);
         }
     });

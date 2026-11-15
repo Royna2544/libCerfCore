@@ -66,6 +66,7 @@ constexpr std::pair<std::string_view, SupportLevel> kSupportLevels[] = {
 
 constexpr std::pair<std::string_view, RomPlacingMode> kRomPlacingModes[] = {
     {"flat_container", RomPlacingMode::FlatContainer},
+    {"nand_primary_xip", RomPlacingMode::NandPrimaryXip},
     {"imx51_nand", RomPlacingMode::Imx51Nand},
 };
 

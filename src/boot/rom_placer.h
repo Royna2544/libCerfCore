@@ -30,6 +30,7 @@ private:
        volatile_only as in PlaceRomXips. Single-XIP images place nothing. */
     void PlaceB000FFSections(const ParsedRom& rom, bool volatile_only);
     bool IsVolatilePa(uint32_t pa);
+    bool LoadsPartition(const ParsedRom& rom);
 };
 
 }

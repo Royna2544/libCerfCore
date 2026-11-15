@@ -19,8 +19,8 @@ using cerf::le::U16;
 }  /* namespace */
 
 bool RomParserQueries::ShouldRegister() {
-    return emu_.Get<BoardContext>().GetRomPlacingMode()
-        == RomPlacingMode::FlatContainer;
+    const auto mode = emu_.Get<BoardContext>().GetRomPlacingMode();
+    return mode == RomPlacingMode::FlatContainer || mode == RomPlacingMode::NandPrimaryXip;
 }
 
 void RomParserQueries::OnReady() {
