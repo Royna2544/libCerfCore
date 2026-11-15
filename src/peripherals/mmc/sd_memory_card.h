@@ -30,20 +30,23 @@ private:
     uint32_t Status(uint32_t state) const;
     MmcCommandResult Application(uint8_t index, uint32_t argument, uint32_t response[4]);
     void BuildCsd(uint32_t response[4]);
+    void SwitchFunction(uint32_t argument);
     void ReadBlock();
-    bool ValidAddress(uint32_t address, uint32_t response[4]);
+    bool ValidAddress(uint64_t address, uint32_t response[4]);
     VolatileSectorImage image_;
     std::vector<uint8_t> data_;
     uint32_t state_ = 0u;
-    uint32_t next_address_ = 0u;
-    uint32_t erase_start_ = 0u;
-    uint32_t erase_end_ = 0u;
+    uint64_t next_address_ = 0u;
+    uint64_t erase_start_ = 0u;
+    uint64_t erase_end_ = 0u;
     uint32_t written_blocks_ = 0u;
     uint32_t bus_width_ = 0u;
     bool app_ = false;
     bool multi_read_ = false;
     bool multi_write_ = false;
     bool memory_read_ = false;
+    bool high_capacity_ = false;
+    bool interface_condition_ = false;
 };
 
 }
