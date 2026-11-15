@@ -15,15 +15,15 @@ void SamsungNandUniqueId::Open(const std::string& path, const std::string& otp_p
     if (!host_platform::HostPathExists(path)) {
         LOG(SocNand, "Samsung NAND UID: provisional erased factory bytes; no input file\n");
     } else {
-    host_platform::HostFile file;
-    uint64_t size = 0u;
-    uint32_t done = 0u;
-    if (!file.Open(path, host_platform::FileMode::kReadExisting) || !file.Size(size) ||
-        size != bytes_.size() || !file.Read(bytes_.data(), static_cast<uint32_t>(bytes_.size()), done) ||
-        done != bytes_.size()) {
-        emu_.Get<Fatal>().UserError("Samsung NAND UID input must contain 16 bytes: %s", path.c_str());
-    }
-    LOG(SocNand, "Samsung NAND UID input=%s bytes=16\n", path.c_str());
+        host_platform::HostFile file;
+        uint64_t size = 0u;
+        uint32_t done = 0u;
+        if (!file.Open(path, host_platform::FileMode::kReadExisting) || !file.Size(size) ||
+            size != bytes_.size() || !file.Read(bytes_.data(), static_cast<uint32_t>(bytes_.size()), done) ||
+            done != bytes_.size()) {
+            emu_.Get<Fatal>().UserError("Samsung NAND UID input must contain 16 bytes: %s", path.c_str());
+        }
+        LOG(SocNand, "Samsung NAND UID input=%s bytes=16\n", path.c_str());
     }
     // NANDUUID.dll C0CA2280 uses the same30/65 read sequence with a page
     // selector. The supplied UID covers page0 only; other cells are provisional
