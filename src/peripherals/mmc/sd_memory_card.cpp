@@ -4,7 +4,6 @@
 #include <cerfcore/core/cerf_emulator.h>
 #include <cerfcore/core/fatal.h>
 #include <cerfcore/core/log.h>
-#include <cerfcore/platform/host_file.h>
 #include <cerfcore/socs/guest_cpu_reset.h>
 #include <cerfcore/state/state_stream.h>
 
@@ -15,22 +14,15 @@ namespace cerfcore {
 
 void SdMemoryCard::OnReady() {
     const auto path = ImagePath();
-    host_platform::HostFile file;
-    uint64_t size = 0u;
-    if (!file.Open(path, host_platform::FileMode::kReadExisting) || !file.Size(size) ||
-        size < 4096u || size > 0x40000000u || (size & 511u) != 0u) {
+    if (!image_.Open(path) || image_.Size() < 4096u || image_.Size() > 0x40000000u) {
         emu_.Get<Fatal>().UserError("SD image open/geometry path=%s bytes=%llu", path.c_str(),
-                                   static_cast<unsigned long long>(size));
-    }
-    cells_.resize(static_cast<size_t>(size));
-    uint32_t done = 0u;
-    if (!file.Read(cells_.data(), static_cast<uint32_t>(size), done) || done != size) {
-        emu_.Get<Fatal>().UserError("SD image short read path=%s", path.c_str());
+                                   static_cast<unsigned long long>(image_.Size()));
     }
     uint32_t csd[4]{};
     BuildCsd(csd);
     emu_.Get<GuestCpuReset>().RegisterResetListener([this](ResetLineKind) { Reset(); });
-    LOG(Boot, "SD slot=%u input=%s bytes=%u volatile=1\n", SlotIndex(), path.c_str(), done);
+    LOG(Boot, "SD slot=%u input=%s bytes=%llu volatile=1\n", SlotIndex(), path.c_str(),
+        static_cast<unsigned long long>(image_.Size()));
 }
 
 void SdMemoryCard::Reset() {
@@ -52,14 +44,14 @@ void SdMemoryCard::BuildCsd(uint32_t response[4]) {
     uint32_t multiplier = 0u;
     for (; multiplier < 8u; ++multiplier) {
         const uint32_t unit = 512u << (multiplier + 2u);
-        if (cells_.size() % unit == 0u && cells_.size() / unit <= 4096u) break;
+        if (image_.Size() % unit == 0u && image_.Size() / unit <= 4096u) break;
     }
-    if (multiplier == 8u) emu_.Get<Fatal>().UserError("SD SDSC capacity=%llu", static_cast<unsigned long long>(cells_.size()));
+    if (multiplier == 8u) emu_.Get<Fatal>().UserError("SD SDSC capacity=%llu", static_cast<unsigned long long>(image_.Size()));
     set(112u, 8u, 0x0Eu);
     set(96u, 8u, 0x32u);
     set(84u, 12u, 0x135u);
     set(80u, 4u, 9u);
-    set(62u, 12u, static_cast<uint32_t>(cells_.size() / (512u << (multiplier + 2u))) - 1u);
+    set(62u, 12u, static_cast<uint32_t>(image_.Size() / (512u << (multiplier + 2u))) - 1u);
     set(47u, 3u, multiplier);
     set(46u, 1u, 1u);
     set(26u, 3u, 2u);
@@ -138,7 +130,8 @@ MmcCommandResult SdMemoryCard::Command(uint8_t index, uint32_t argument, uint32_
         return MmcCommandResult::Short;
     case 38u:
         if (state_ != 4u || erase_end_ < erase_start_) break;
-        std::fill(cells_.begin() + erase_start_, cells_.begin() + erase_end_ + 512u, 0u);
+        if (!image_.Erase(erase_start_ / 512u, static_cast<uint64_t>(erase_end_) / 512u + 1u))
+            emu_.Get<Fatal>().Die("SD erase range");
         return MmcCommandResult::Short;
     default: break;
     }
@@ -177,15 +170,15 @@ MmcCommandResult SdMemoryCard::Application(uint8_t index, uint32_t argument, uin
 
 bool SdMemoryCard::ValidAddress(uint32_t address, uint32_t response[4]) {
     if ((address & 511u) != 0u) { response[0u] |= 1u << 30u; return false; }
-    if (static_cast<uint64_t>(address) + 512u > cells_.size()) { response[0u] |= 1u << 31u; return false; }
+    if (static_cast<uint64_t>(address) + 512u > image_.Size()) { response[0u] |= 1u << 31u; return false; }
     return true;
 }
 
 void SdMemoryCard::ReadBlock() {
-    if (static_cast<uint64_t>(next_address_) + 512u > cells_.size()) {
+    data_.resize(512u);
+    if (!image_.Read(next_address_ / 512u, data_.data())) {
         emu_.Get<Fatal>().Die("SD read offset=%08X", next_address_);
     }
-    data_.assign(cells_.begin() + next_address_, cells_.begin() + next_address_ + 512u);
     next_address_ += 512u;
 }
 
@@ -201,10 +194,9 @@ void SdMemoryCard::EndDataPhase() {
 }
 
 void SdMemoryCard::ReceiveBlock(const uint8_t* data, uint32_t bytes) {
-    if (state_ != 6u || bytes != 512u || static_cast<uint64_t>(next_address_) + bytes > cells_.size()) {
+    if (state_ != 6u || bytes != 512u || !image_.Write(next_address_ / 512u, data)) {
         emu_.Get<Fatal>().Die("SD write offset=%08X bytes=%u state=%u", next_address_, bytes, state_);
     }
-    std::memcpy(cells_.data() + next_address_, data, bytes);
     next_address_ += bytes;
     ++written_blocks_;
     if (!multi_write_) state_ = 4u;
@@ -221,7 +213,7 @@ void SdMemoryCard::SaveState(StateWriter& w) {
     w.Write("multi_read", multi_read_);
     w.Write("multi_write", multi_write_);
     w.Write("memory_read", memory_read_);
-    w.WriteBytes("cells", cells_.data(), cells_.size());
+    image_.SaveState(w);
     w.Write("data_size", static_cast<uint32_t>(data_.size()));
     w.WriteBytes("data", data_.data(), data_.size());
 }
@@ -237,11 +229,11 @@ void SdMemoryCard::RestoreState(StateReader& r) {
     r.Read("multi_read", multi_read_);
     r.Read("multi_write", multi_write_);
     r.Read("memory_read", memory_read_);
-    r.ReadBytes("cells", cells_.data(), cells_.size());
+    image_.RestoreState(r);
     uint32_t size = 0u;
     r.Read("data_size", size);
-    if (state_ > 8u || size > 512u || next_address_ > cells_.size() ||
-        erase_start_ > cells_.size() - 512u || erase_end_ > cells_.size() - 512u ||
+    if (state_ > 8u || size > 512u || next_address_ > image_.Size() ||
+        erase_start_ > image_.Size() - 512u || erase_end_ > image_.Size() - 512u ||
         (bus_width_ != 0u && bus_width_ != 2u)) r.Reject("SD protocol state");
     data_.resize(size);
     r.ReadBytes("data", data_.data(), data_.size());

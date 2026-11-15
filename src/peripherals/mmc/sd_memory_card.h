@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mmc_card.h"
+#include "../../storage/volatile_sector_image.h"
 #include <cerfcore/core/sd_card_cid.h>
 
 #include <array>
@@ -31,7 +32,7 @@ private:
     void BuildCsd(uint32_t response[4]);
     void ReadBlock();
     bool ValidAddress(uint32_t address, uint32_t response[4]);
-    std::vector<uint8_t> cells_;
+    VolatileSectorImage image_;
     std::vector<uint8_t> data_;
     uint32_t state_ = 0u;
     uint32_t next_address_ = 0u;
