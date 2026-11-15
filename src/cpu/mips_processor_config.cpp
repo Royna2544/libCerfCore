@@ -46,6 +46,14 @@ void MipsProcessorConfig::OnReady() {
     device_ip_mask_ = c.Number("device_ip_mask");
 
     config_reset_     = c.Number("config_reset");
+    if (isa_level_ == cerfengine::MipsIsaLevel::kMips32R1) {
+        config1_reset_ = c.Number("config1_reset");
+        if (((config1_reset_ >> 25u) & 63u) + 1u != tlb_size_ ||
+            (config1_reset_ & 0x80000000u) != 0u) {
+            emu_.Get<ConfigReader>().Fail(c.Origin("config1_reset"),
+                                         "Config1 must describe the modeled TLB and no Config2");
+        }
+    }
     config_writable_  = c.Number("config_writable");
     config_zero_only_ = c.Number("config_zero_only");
     status_reset_     = c.Number("status_reset");

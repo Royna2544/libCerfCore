@@ -38,6 +38,7 @@ public:
     static void     CERFENGINE_FASTCALL WriteCompare(void* ops, uint32_t value);
     static void     CERFENGINE_FASTCALL WriteEntryHiR3000(void* ops, uint32_t value);
     static void     CERFENGINE_FASTCALL WriteEntryHiR4000(void* ops, uint32_t value);
+    static void     CERFENGINE_FASTCALL WriteWiredR4000(void* ops, uint32_t value);
 
 private:
     void AnchorSavedCount();

@@ -1,6 +1,7 @@
 #include "../mips/mips_tlb_model.h"
 
 #include <cstdint>
+#include <bit>
 
 #include <cerfcore/boards/board_context.h>
 #include <cerfengine/mips/mips_cpu_state.h>
@@ -8,8 +9,12 @@
 #include "../../socs/vr4111/vr4111_id.h"
 #include "../../socs/vr4121/vr4121_id.h"
 #include "../../socs/vr4122/vr4122_id.h"
+#include "../../socs/au1300/au1300_id.h"
 #include "../vr5500/vr5500_id.h"
 #include <cerfcore/core/cerf_emulator.h>
+#include <cerfcore/core/fatal.h>
+#include "../../execution/guest_cycle_clock.h"
+#include "../mips_processor_config.h"
 
 namespace cerfcore {
 
@@ -39,7 +44,11 @@ public:
     bool ShouldRegister() override {
         const std::string_view soc = emu_.Get<BoardContext>().GetSocId();
         return soc == SocId::Vr4102 || soc == SocId::Vr4111 || soc == SocId::Vr4121 ||
-               soc == SocId::Vr4122 || soc == SocId::Vr5500;
+               soc == SocId::Vr4122 || soc == SocId::Vr5500 || soc == SocId::Au1300;
+    }
+
+    void OnReady() override {
+        mips32r1_ = emu_.Get<MipsProcessorConfig>().IsaLevel() == cerfengine::MipsIsaLevel::kMips32R1;
     }
 
     cerfengine::MipsTlbHooks Hooks() override {
@@ -48,12 +57,24 @@ public:
     }
 
     uint32_t RandomIndex(cerfengine::MipsCpuState* st) override {
+        if (mips32r1_) {
+            return CountdownRandom(st->cp0_wired, st->nb_tlb, emu_.Get<GuestCycleClock>().Cycles());
+        }
         return NextRandom(st->cp0_wired, st->nb_tlb - st->cp0_wired);
     }
 
 private:
-    static void CERFENGINE_FASTCALL WriteIndexed(void*, cerfengine::MipsTlbContext& ctx) {
+    static void CERFENGINE_FASTCALL WriteIndexed(void* self, cerfengine::MipsTlbContext& ctx) {
         cerfengine::MipsCpuState* st = ctx.State();
+        if (static_cast<MipsMmuR4000*>(self)->mips32r1_) {
+            const uint32_t index = st->cp0_index & (std::bit_ceil(st->nb_tlb) - 1u);
+            if (index >= st->nb_tlb) {
+                static_cast<MipsMmuR4000*>(self)->emu_.Get<Fatal>().Die("MIPS TLB index %u exceeds its size", index);
+            }
+            FlushAll(ctx);
+            FillTlb(st, index);
+            return;
+        }
         /* QEMU r4k_helper_tlbwi (tlb_helper.c). */
         const uint16_t asid = st->cp0_entryhi & kAsidMask;
         const uint32_t idx  = (st->cp0_index & ~0x80000000u) % st->nb_tlb;
@@ -77,6 +98,11 @@ private:
         cerfengine::MipsCpuState* st = ctx.State();
         /* QEMU r4k_helper_tlbwr (tlb_helper.c). */
         const uint32_t r = static_cast<MipsMmuR4000*>(self)->RandomIndex(st);
+        if (static_cast<MipsMmuR4000*>(self)->mips32r1_) {
+            FlushAll(ctx);
+            FillTlb(st, r);
+            return;
+        }
         InvalidateTlb(ctx, r, true);
         FillTlb(st, r);
     }
@@ -129,7 +155,7 @@ private:
     }
 
     static cerfengine::MipsTlbResult CERFENGINE_FASTCALL MapAddress(
-        void*, cerfengine::MipsCpuState* st, uint32_t va, cerfengine::MipsAccess acc,
+        void* self, cerfengine::MipsCpuState* st, uint32_t va, cerfengine::MipsAccess acc,
         uint32_t* pa) {
         /* QEMU r4k_map_address (tlb_helper.c). */
         const uint16_t asid = st->cp0_entryhi & kAsidMask;
@@ -148,7 +174,13 @@ private:
             if (acc != cerfengine::MipsAccess::kWrite || (n ? e.d1 : e.d0)) {
                 /* SoC physical-space mirror (VR4102 UM Table 5-6): a PFN above
                    0x20000000 aliases into 0x0-0x1FFFFFFF. */
-                *pa = static_cast<uint32_t>(e.pfn[n] | (va & (mask >> 1))) & st->phys_addr_mask;
+                const uint64_t physical = e.pfn[n] | (va & (mask >> 1));
+                auto& model = *static_cast<MipsMmuR4000*>(self);
+                if (model.mips32r1_ && physical > UINT32_MAX) {
+                    model.emu_.Get<Fatal>().Die("MIPS TLB physical address %llX exceeds the 32-bit Engine bus",
+                                               static_cast<unsigned long long>(physical));
+                }
+                *pa = static_cast<uint32_t>(physical) & st->phys_addr_mask;
                 return cerfengine::MipsTlbResult::kMatch;
             }
             return cerfengine::MipsTlbResult::kModified;
@@ -227,6 +259,8 @@ private:
             InvalidateTlb(ctx, --st->tlb_in_use, false);
         }
     }
+
+    bool mips32r1_ = false;
 };
 
 }  // namespace

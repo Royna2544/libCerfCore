@@ -2,8 +2,17 @@
 
 #include <cerfengine/mips/mips_cpu_state.h>
 #include <cerfcore/state/state_stream.h>
+#include <cerfcore/core/cerf_emulator.h>
+#include <cerfcore/core/fatal.h>
+#include "../mips_processor_config.h"
 
 namespace cerfcore {
+
+uint32_t MipsTlbModel::CountdownRandom(uint32_t first, uint32_t count, uint64_t cycle) {
+    if (first >= count) emu_.Get<Fatal>().Die("MIPS Wired %u exceeds the TLB size %u", first, count);
+    const uint32_t slots = count - first;
+    return first + slots - 1u - static_cast<uint32_t>((cycle - random_anchor_) % slots);
+}
 
 uint32_t MipsTlbModel::NextRandom(uint32_t first, uint32_t nb) {
     if (nb == 1) {
@@ -27,11 +36,17 @@ void MipsTlbModel::FlushAll(cerfengine::MipsTlbContext& ctx) {
 void MipsTlbModel::SaveState(StateWriter& w) const {
     w.Write("lcg_seed", lcg_seed_);
     w.Write("prev_random_idx", prev_random_idx_);
+    if (emu_.Get<MipsProcessorConfig>().IsaLevel() == cerfengine::MipsIsaLevel::kMips32R1) {
+        w.Write("random_anchor", random_anchor_);
+    }
 }
 
 void MipsTlbModel::RestoreState(StateReader& r) {
     r.Read("lcg_seed", lcg_seed_);
     r.Read("prev_random_idx", prev_random_idx_);
+    if (emu_.Get<MipsProcessorConfig>().IsaLevel() == cerfengine::MipsIsaLevel::kMips32R1) {
+        r.Read("random_anchor", random_anchor_);
+    }
 }
 
 }

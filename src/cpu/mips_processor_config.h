@@ -23,6 +23,7 @@ public:
     uint32_t     DeviceIpMask() const { return device_ip_mask_; }
 
     uint32_t ConfigReset()    const { return config_reset_; }
+    uint32_t Config1Reset()   const { return config1_reset_; }
     uint32_t ConfigWritable() const { return config_writable_; }
     uint32_t ConfigZeroOnly() const { return config_zero_only_; }
     uint32_t StatusReset()    const { return status_reset_; }
@@ -51,6 +52,7 @@ private:
     uint32_t     phys_addr_mask_ = 0;
     uint32_t     device_ip_mask_ = 0;
     uint32_t     config_reset_     = 0;
+    uint32_t     config1_reset_    = 0;
     uint32_t     config_writable_  = 0;
     uint32_t     config_zero_only_ = 0;
     uint32_t     status_reset_     = 0;

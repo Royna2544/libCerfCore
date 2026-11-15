@@ -66,6 +66,7 @@ void MipsCp0Ops::OnCompareMatch() {
 void MipsCp0Ops::OnCpuReset() {
     if (!config_->HasCounter()) return;
     const uint64_t now = clock_->Cycles();
+    tlb_->ResetRandomAt(now);
     SetCountRatio();
     count_.Anchor(now, 0u);
     ArmCompare(now);
@@ -149,11 +150,22 @@ void CERFENGINE_FASTCALL MipsCp0Ops::WriteEntryHiR4000(void* ops, uint32_t value
     cerfengine::MipsCpuState& s = *self->cpu_state_;
     const uint32_t kMask = cerfengine::MipsVpn2Mask(s.min_page_shift) | 0xFFu;
     const uint32_t old = s.cp0_entryhi;
-    const uint32_t val = (value & kMask) | (old & ~kMask);
+    const bool r1 = self->config_->IsaLevel() == cerfengine::MipsIsaLevel::kMips32R1;
+    const uint32_t val = (value & kMask) | (r1 ? 0u : old & ~kMask);
     s.cp0_entryhi = val;
     if ((old & 0xFFu) != (val & 0xFFu)) {
         self->tlb_context_->InvalidateAddressSpace();
     }
+}
+
+void CERFENGINE_FASTCALL MipsCp0Ops::WriteWiredR4000(void* ops, uint32_t value) {
+    auto& self = *static_cast<MipsCp0Ops*>(ops);
+    value &= 0x3Fu;
+    if (value >= self.cpu_state_->nb_tlb) {
+        self.emu_.Get<Fatal>().Die("MIPS Wired %u leaves no random TLB entry", value);
+    }
+    self.cpu_state_->cp0_wired = value;
+    self.tlb_->ResetRandomAt(self.clock_->Cycles());
 }
 
 }

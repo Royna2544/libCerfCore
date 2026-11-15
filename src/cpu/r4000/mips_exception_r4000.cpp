@@ -7,9 +7,11 @@
 #include "../../socs/vr4111/vr4111_id.h"
 #include "../../socs/vr4121/vr4121_id.h"
 #include "../../socs/vr4122/vr4122_id.h"
+#include "../../socs/au1300/au1300_id.h"
 #include "../vr5500/vr5500_id.h"
 #include <cerfcore/core/cerf_emulator.h>
 #include <cerfengine/mips/mips_cpu_state.h>
+#include "../mips_processor_config.h"
 
 namespace cerfcore {
 
@@ -22,7 +24,12 @@ public:
     bool ShouldRegister() override {
         const std::string_view soc = emu_.Get<BoardContext>().GetSocId();
         return soc == SocId::Vr4102 || soc == SocId::Vr4111 || soc == SocId::Vr4121 ||
-               soc == SocId::Vr4122 || soc == SocId::Vr5500;
+               soc == SocId::Vr4122 || soc == SocId::Vr5500 || soc == SocId::Au1300;
+    }
+
+    void OnReady() override {
+        MipsExceptionModel::OnReady();
+        mips32r1_ = emu_.Get<MipsProcessorConfig>().IsaLevel() == cerfengine::MipsIsaLevel::kMips32R1;
     }
 
     cerfengine::MipsExceptionHooks Hooks() override {
@@ -39,7 +46,7 @@ private:
         return true;
     }
 
-    static void CERFENGINE_FASTCALL EnterException(void*, cerfengine::MipsCpuState* state,
+    static void CERFENGINE_FASTCALL EnterException(void* self, cerfengine::MipsCpuState* state,
                                                    uint32_t cause, bool refill_eligible) {
         cerfengine::MipsCpuState& s = *state;
 
@@ -49,6 +56,10 @@ private:
         uint32_t offset = cerfengine::MipsExcVector::kOffGeneral;
         if (refill_eligible && !exl) {
             offset = cerfengine::MipsExcVector::kOffRefill;
+        }
+        if (static_cast<MipsExceptionR4000*>(self)->mips32r1_ &&
+            cause == cerfengine::MipsExcCode::kInt && (s.cp0_cause & 0x00800000u) != 0u) {
+            offset = 0x200u;
         }
 
         if (!exl) {
@@ -90,6 +101,8 @@ private:
                          ((va >> (shift - 3u)) & ctx_field);
         s.cp0_entryhi  = (s.cp0_entryhi & 0xFFu) | (va & cerfengine::MipsVpn2Mask(shift));
     }
+
+    bool mips32r1_ = false;
 };
 
 }  /* namespace */

@@ -2,12 +2,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <bit>
 
 #include <cerfcore/boards/board_context.h>
 #include "../../socs/vr4102/vr4102_id.h"
 #include "../../socs/vr4111/vr4111_id.h"
 #include "../../socs/vr4121/vr4121_id.h"
 #include "../../socs/vr4122/vr4122_id.h"
+#include "../../socs/au1300/au1300_id.h"
 #include "../vr5500/vr5500_id.h"
 #include <cerfcore/core/cerf_emulator.h>
 #include <cerfengine/mips/mips_cpu.h>
@@ -61,7 +63,7 @@ public:
     bool ShouldRegister() override {
         const std::string_view soc = emu_.Get<BoardContext>().GetSocId();
         return soc == SocId::Vr4102 || soc == SocId::Vr4111 || soc == SocId::Vr4121 ||
-               soc == SocId::Vr4122 || soc == SocId::Vr5500;
+               soc == SocId::Vr4122 || soc == SocId::Vr5500 || soc == SocId::Au1300;
     }
 
     void OnReady() override {
@@ -69,14 +71,21 @@ public:
         ops_    = &emu_.Get<MipsCp0Ops>();
         MipsEngineBridge& bridge = emu_.Get<MipsEngineBridge>();
         cpu_state_ = bridge.Engine().Get<cerfengine::MipsCpu>().State();
-        config_at_reset_ = config_->ConfigReset() | (emu_.Get<MipsCoreClock>().ConfigEc() << kConfigEcShift);
-        if (config_->HasMips16()) config_at_reset_ |= kConfigM16;
+        config_at_reset_ = config_->ConfigReset();
+        if (config_->IsaLevel() != cerfengine::MipsIsaLevel::kMips32R1) {
+            config_at_reset_ |= emu_.Get<MipsCoreClock>().ConfigEc() << kConfigEcShift;
+            if (config_->HasMips16()) config_at_reset_ |= kConfigM16;
+        }
         bridge.RegisterResetListener([this] { ApplyColdReset(); });
         ApplyColdReset();
     }
 
     cerfengine::MipsCp0Decision Decide(uint32_t rd) override {
         cerfengine::MipsCp0Decision d;
+        if (config_->IsaLevel() == cerfengine::MipsIsaLevel::kMips32R1 &&
+            (rd == cerfengine::MipsCp0::kXContext || rd == cerfengine::MipsCp0::kECC)) {
+            return d;
+        }
         const int32_t off = RegOffset(rd);
         if (off < 0 || !config_->HasCp0Reg(rd)) {
             return d;
@@ -113,10 +122,51 @@ public:
         if (rd == cerfengine::MipsCp0::kCause) {
             d.write_mask = kMipsCauseSoftwareIp;
         }
+        if (config_->IsaLevel() == cerfengine::MipsIsaLevel::kMips32R1) {
+            switch (rd) {
+            case cerfengine::MipsCp0::kIndex: d.write_mask = std::bit_ceil(config_->TlbSize()) - 1u; break;
+            case cerfengine::MipsCp0::kEntryLo0:
+            case cerfengine::MipsCp0::kEntryLo1: d.write_mask = 0x3FFFFFFFu; break;
+            case cerfengine::MipsCp0::kContext: d.write_mask = 0xFF800000u; break;
+            case cerfengine::MipsCp0::kPageMask: d.write_mask = 0x01FFE000u; break;
+            case cerfengine::MipsCp0::kWired:
+                d.write = &MipsCp0Ops::WriteWiredR4000;
+                d.write_context = ops_;
+                break;
+            case cerfengine::MipsCp0::kLLAddr: d.writable = false; break;
+            case cerfengine::MipsCp0::kWatchLo:
+                d.write_mask = 0xFFFFFFF8u;
+                d.zero_only = 7u;
+                break;
+            case cerfengine::MipsCp0::kWatchHi: d.write_mask = 0x40FF0FF8u; break;
+            case cerfengine::MipsCp0::kCause:
+                d.write_mask = 0x00800300u;
+                d.zero_only = 0x00400000u;
+                break;
+            default: break;
+            }
+        }
+        return d;
+    }
+
+    cerfengine::MipsCp0Decision Decide(uint32_t rd, uint32_t sel) override {
+        if (sel == 0u) return Decide(rd);
+        cerfengine::MipsCp0Decision d;
+        if (config_->IsaLevel() == cerfengine::MipsIsaLevel::kMips32R1 &&
+            rd == cerfengine::MipsCp0::kConfig && sel == 1u &&
+            (config_->ConfigReset() & 0x80000000u) != 0u) {
+            d.present = true;
+            d.read = &ReadConfig1;
+            d.read_context = this;
+        }
         return d;
     }
 
 private:
+    static uint32_t CERFENGINE_FASTCALL ReadConfig1(void* context) {
+        return static_cast<MipsCp0ModelR4000*>(context)->config_->Config1Reset();
+    }
+
     void ApplyColdReset() {
         cpu_state_->cp0_status = config_->StatusReset();
         cpu_state_->cp0_config = config_at_reset_;
