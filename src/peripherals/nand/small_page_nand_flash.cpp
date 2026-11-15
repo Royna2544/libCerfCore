@@ -41,10 +41,14 @@ void SmallPageNandFlash::Die(const char* what, uint32_t value) const {
 
 void SmallPageNandFlash::PowerUp() {
     mode_          = Mode::Read;
+    status_from_   = Mode::Read;
     pointer_       = Pointer::A;
     page_loaded_   = false;
     sequential_ended_ = false;
     address_open_  = false;
+    resume_address_ = false;
+    restrict_read_block_ = false;
+    read_block_ = 0u;
     addr_cycle_    = 0;
     column_        = 0;
     row_           = 0;
@@ -89,9 +93,22 @@ void SmallPageNandFlash::StartAddressPhase(Mode mode) {
     page_loaded_  = false;
     sequential_ended_ = false;
     address_open_ = true;
+    resume_address_ = false;
+    restrict_read_block_ = false;
     addr_cycle_   = 0;
     column_       = 0;
     row_          = 0;
+}
+
+void SmallPageNandFlash::ReadCommand(Pointer pointer) {
+    pointer_ = pointer;
+    if (mode_ == Mode::Status && status_from_ == Mode::Read && page_loaded_) {
+        mode_ = Mode::Read;
+        address_open_ = false;
+        resume_address_ = true;
+    } else {
+        StartAddressPhase(Mode::Read);
+    }
 }
 
 void SmallPageNandFlash::Command(uint8_t value) {
@@ -100,9 +117,9 @@ void SmallPageNandFlash::Command(uint8_t value) {
     if (mode_ == Mode::EraseSetup && value != kCmdErase && value != kCmdReset)
         Die("command between erase setup and confirm", value);
     switch (value) {
-        case kCmdRead1A: pointer_ = Pointer::A; StartAddressPhase(Mode::Read); return;
-        case kCmdRead1B: pointer_ = Pointer::B; StartAddressPhase(Mode::Read); return;
-        case kCmdRead2:  pointer_ = Pointer::C; StartAddressPhase(Mode::Read); return;
+        case kCmdRead1A: ReadCommand(Pointer::A); return;
+        case kCmdRead1B: ReadCommand(Pointer::B); return;
+        case kCmdRead2:  ReadCommand(Pointer::C); return;
         case kCmdDataInput:
             RequireWritesEnabled("serial data input command", value);
             std::memset(page_buf_, SmallPageNandStore::kErased, sizeof(page_buf_));
@@ -127,8 +144,10 @@ void SmallPageNandFlash::Command(uint8_t value) {
             Erase();
             break;
         case kCmdStatus:
+            if (mode_ != Mode::Status) status_from_ = mode_;
             mode_         = Mode::Status;
             address_open_ = false;
+            resume_address_ = false;
             return;
         case kCmdReset:
             mode_         = Mode::Waiting;
@@ -139,6 +158,7 @@ void SmallPageNandFlash::Command(uint8_t value) {
         default:
             Die("command not modeled", value);
     }
+    status_from_  = mode_;
     mode_         = Mode::Status;
     page_loaded_  = false;
     address_open_ = false;
@@ -148,7 +168,11 @@ void SmallPageNandFlash::Command(uint8_t value) {
 void SmallPageNandFlash::Address(uint8_t value) {
     if (!address_open_) {
         if (mode_ != Mode::Read) Die("address cycle with no command that takes one", value);
+        const bool restrict_block = geometry_.sequential_row_read && page_loaded_ && !resume_address_;
+        const uint32_t block = page_ / SmallPageNandStore::kPagesPerBlock;
         StartAddressPhase(Mode::Read);
+        restrict_read_block_ = restrict_block;
+        read_block_ = block;
     }
     switch (mode_) {
         case Mode::ReadId:
@@ -179,6 +203,10 @@ void SmallPageNandFlash::Address(uint8_t value) {
 
 void SmallPageNandFlash::CompleteRowAddress() {
     if (row_ >= PageCount()) Die("row address past the device", row_);
+    if (mode_ == Mode::Read && restrict_read_block_ &&
+        row_ / SmallPageNandStore::kPagesPerBlock != read_block_) {
+        Die("random read crosses a block without a command", row_);
+    }
     page_ = row_;
     if (mode_ == Mode::EraseSetup) {
         page_loaded_ = true;
@@ -198,6 +226,7 @@ void SmallPageNandFlash::LoadPage(uint32_t page) {
 
 uint8_t SmallPageNandFlash::ReadData() {
     address_open_ = false;
+    resume_address_ = false;
     switch (mode_) {
         case Mode::Status:
             RequireWriteProtectLevel("status read with the WP# line level not established");
@@ -268,12 +297,16 @@ void SmallPageNandFlash::Erase() {
 
 void SmallPageNandFlash::SaveState(StateWriter& w) {
     w.Write("nand_mode", mode_);
+    w.Write("nand_status_from", status_from_);
     w.Write("nand_pointer", pointer_);
     w.Write("nand_write_protect_known", write_protect_known_);
     w.Write("nand_write_protect", write_protect_);
     w.Write("nand_page_loaded", page_loaded_);
     w.Write("nand_sequential_ended", sequential_ended_);
     w.Write("nand_address_open", address_open_);
+    w.Write("nand_resume_address", resume_address_);
+    w.Write("nand_restrict_read_block", restrict_read_block_);
+    w.Write("nand_read_block", read_block_);
     w.Write("nand_addr_cycle", addr_cycle_);
     w.Write("nand_column", column_);
     w.Write("nand_row", row_);
@@ -285,12 +318,16 @@ void SmallPageNandFlash::SaveState(StateWriter& w) {
 
 void SmallPageNandFlash::RestoreState(StateReader& r) {
     r.Read("nand_mode", mode_);
+    r.Read("nand_status_from", status_from_);
     r.Read("nand_pointer", pointer_);
     r.Read("nand_write_protect_known", write_protect_known_);
     r.Read("nand_write_protect", write_protect_);
     r.Read("nand_page_loaded", page_loaded_);
     r.Read("nand_sequential_ended", sequential_ended_);
     r.Read("nand_address_open", address_open_);
+    r.Read("nand_resume_address", resume_address_);
+    r.Read("nand_restrict_read_block", restrict_read_block_);
+    r.Read("nand_read_block", read_block_);
     r.Read("nand_addr_cycle", addr_cycle_);
     r.Read("nand_column", column_);
     r.Read("nand_row", row_);

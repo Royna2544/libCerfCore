@@ -65,6 +65,7 @@ private:
     void     RequireWritesEnabled(const char* op, uint32_t value) const;
     void     ConsumeOneShotPointer();
     void     StartAddressPhase(Mode mode);
+    void     ReadCommand(Pointer pointer);
     void     CompleteRowAddress();
     void     LoadPage(uint32_t page);
     void     Program();
@@ -76,12 +77,16 @@ private:
     SmallPageNandStore&   store_;
 
     Mode     mode_          = Mode::Read;
+    Mode     status_from_   = Mode::Read;
     Pointer  pointer_       = Pointer::A;
     bool     write_protect_known_ = false;
     bool     write_protect_       = false;
     bool     page_loaded_   = false;
     bool     sequential_ended_ = false;
     bool     address_open_  = false;
+    bool     resume_address_ = false;
+    bool     restrict_read_block_ = false;
+    uint32_t read_block_ = 0u;
     uint32_t addr_cycle_    = 0;
     uint32_t column_        = 0;
     uint32_t row_           = 0;
