@@ -166,6 +166,11 @@
   ],
   "soc_families": [
     {
+      "id": "mips32r1",
+      "name": "MIPS32 Revision 1",
+      "arch": "MIPS"
+    },
+    {
       "id": "strongarm",
       "name": "StrongARM",
       "arch": "ARM"
@@ -227,6 +232,11 @@
     }
   ],
   "socs": [
+    {
+      "id": "au1300",
+      "name": "RMI Alchemy Au1300",
+      "family_id": "mips32r1"
+    },
     {
       "id": "sa1100",
       "name": "Intel SA-1100",
@@ -329,6 +339,12 @@
     }
   ],
   "cpu_config_params": [
+    {
+      "id": "config1_reset",
+      "name": "Config1 at reset",
+      "arch": "MIPS",
+      "type": "hex"
+    },
     {
       "id": "midr",
       "name": "Main ID (MIDR)",
@@ -753,6 +769,32 @@
     }
   ],
   "cpu_configs": [
+    {
+      "soc_id": "au1300",
+      "values": {
+        "prid": "0x800C8001",
+        "isa_level": "mips32r1",
+        "tlb_size": 32,
+        "min_page_size": "4kb",
+        "phys_addr_mask": "0xFFFFFFFF",
+        "device_ip_mask": "0x00003C00",
+        "fpu": false,
+        "llsc": true,
+        "counter": true,
+        "watch": true,
+        "vr41xx_power_modes": false,
+        "mips16": false,
+        "tx39_multiply_add": false,
+        "cop1_cop2_unusable": true,
+        "config_reset": "0x80000083",
+        "config1_reset": "0x3E63318A",
+        "config_writable": "0x00000007",
+        "config_zero_only": "0x00000000",
+        "status_reset": "0x00400004",
+        "status_writable": "0x1A58FF17",
+        "status_zero_only": "0x02000000"
+      }
+    },
     {
       "id": "arm",
       "values": {
@@ -1295,6 +1337,21 @@
     }
   ],
   "board_families": [
+    {
+      "id": "inavi_gn2010",
+      "name": "iNavi GN 2010",
+      "soc_id": "au1300",
+      "device_year": 2010,
+      "device_features": [],
+      "notes": [
+        "Experimental Au1374 port. Initial Config words and external inputs are provisional."
+      ],
+      "lcd_panel_size": {
+        "width": 800,
+        "height": 480
+      },
+      "rom_placing_mode": "nand_primary_xip"
+    },
     {
       "id": "samsung_smdk2410",
       "name": "Samsung SMDK2410",
@@ -2596,6 +2653,13 @@
     }
   ],
   "boards": [
+    {
+      "id": "inavi_gn2010",
+      "name": "iNavi GN 2010 (Au1374)",
+      "short_name": "iNavi GN 2010",
+      "board_family_id": "inavi_gn2010",
+      "support_level": "no_support"
+    },
     {
       "id": "devemu",
       "name": "Device Emulator 2008 (QVGA)",
