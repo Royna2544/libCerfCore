@@ -135,8 +135,11 @@ void PacedWaveOut::OnBlockDone(uint32_t slot) {
             --slot_stale_[slot];
         } else if (ReleaseSlotLocked(slot) && output_active_.load(std::memory_order_acquire)) {
             RefreshPositionLocked();
-            if (device_started_ && !finished_ && outstanding_ == 0 && pending_count_ == 0)
+            if (device_started_ && !finished_ && outstanding_ == 0 && pending_count_ == 0) {
                 ++starved_;
+                priming_      = true;
+                start_frames_ = std::min(start_frames_ * 2.0, set_point_frames_);
+            }
             if (!device_started_) {
                 device_started_ = true;
                 rate_match_.DeviceStarted();
@@ -153,6 +156,7 @@ void PacedWaveOut::BeginAudioOut() {
     device_started_ = false;
     starved_        = 0;
     priming_        = outstanding_ == 0 && pending_count_ == 0;
+    start_frames_   = static_cast<double>(kStartBlocks * kHostBlockFrames);
     finished_       = false;
     stream_bytes_   = 0;
     output_active_.store(true, std::memory_order_release);
@@ -164,7 +168,7 @@ void PacedWaveOut::FinishAudioOut() {
     finished_ = true;
     if (!priming_) return;
     priming_ = false;
-    LOG(Periph, "[%s] stream ended before the set point, %u blocks queued\n",
+    LOG(Periph, "[%s] stream ended before the start threshold, %u blocks queued\n",
         log_tag_, pending_count_);
     sink_.PostCommand(kCommandFlushPending);
 }
@@ -360,9 +364,9 @@ bool PacedWaveOut::QueueOutput(const void* host_bytes, uint32_t length) {
         ++pending_count_;
         if (format != device_format_) sink_.PostCommand(kCommandSetFormat);
         const uint32_t frame = fmt_channels_.load(std::memory_order_relaxed) * 2u;
-        if (priming_ && static_cast<double>(QueuedBytesLocked()) / frame >= set_point_frames_) {
+        if (priming_ && static_cast<double>(QueuedBytesLocked()) / frame >= std::min(start_frames_, set_point_frames_)) {
             priming_ = false;
-            LOG(Periph, "[%s] device starts at the set point, %u blocks queued\n",
+            LOG(Periph, "[%s] device starts with %u blocks queued\n",
                 log_tag_, pending_count_);
             sink_.PostCommand(kCommandFlushPending);
         }

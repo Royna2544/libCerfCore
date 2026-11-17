@@ -51,6 +51,7 @@ private:
 
     static constexpr uint32_t kHostBlockFrames = 512;
     static constexpr uint32_t kHostBlockRateHz = 44100;
+    static constexpr uint32_t kStartBlocks     = 4;
 
     static constexpr uint32_t kSlots = WaveOutSink::kSlots;
 
@@ -77,6 +78,7 @@ private:
     bool                  priming_        = false;
     bool                  finished_       = false;
     double                set_point_frames_ = 0.0;
+    double                start_frames_     = 0.0;
     uint32_t              starved_        = 0;
     uint32_t              device_epoch_   = 0;
     uint32_t              sink_generation_ = 0;
