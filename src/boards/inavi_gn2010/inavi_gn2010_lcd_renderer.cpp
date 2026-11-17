@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <vector>
 
 namespace cerfcore {
 namespace {
@@ -41,46 +42,152 @@ public:
     }
     void RenderInto(uint32_t* output, uint32_t width, uint32_t height) override {
         const auto registers = emu_.Get<Au1300Lcd>().Snapshot();
+        memory_      = &emu_.Get<EmulatedMemory>();
+        cached_page_ = kNoPage;
         std::fill_n(output, static_cast<size_t>(width) * height, 0xFF000000u);
         if ((registers[1u] & 0x80000000u) == 0u) return;
-        const auto screen_width = ((registers[1u] >> 19u) & 0x7FFu) + 1u;
-        const auto screen_height = ((registers[1u] >> 8u) & 0x7FFu) + 1u;
-        const auto background = 0xFF000000u | registers[2u];
-        for (uint32_t y = 0u; y < std::min(height, screen_height); ++y) {
-            for (uint32_t x = 0u; x < std::min(width, screen_width); ++x) {
-                std::array<Pixel, 2u> pipe{};
-                for (uint32_t i = 0u; i < 4u; ++i) {
-                    if ((registers[9u] & (1u << i)) == 0u) continue;
-                    const auto index = (0x100u + i * 0x20u) / 4u;
-                    const auto control = registers[index + 1u];
-                    const auto side = (control >> 29u) & 1u;
-                    const auto priority = control >> 30u;
-                    if (pipe[side].present && priority < pipe[side].priority) continue;
-                    Pixel pixel;
-                    if (!WindowPixel(registers, index, x, y, pixel.color)) continue;
-                    pixel.present = true;
-                    pixel.priority = priority;
-                    pipe[side] = pixel;
-                }
-                auto color = background;
-                if (pipe[0u].present || pipe[1u].present) {
-                    const bool right = pipe[1u].present &&
-                        (!pipe[0u].present || pipe[1u].priority > pipe[0u].priority);
-                    const auto top = right ? 1u : 0u;
-                    const auto bottom = top ^ 1u;
-                    color = pipe[top].color;
-                    if (pipe[bottom].present) color = Blend(color, pipe[bottom].color);
-                }
-                color = Cursor(registers, x, y, color);
-                if ((registers[1u] & 0x40u) != 0u) {
-                    color = (registers[1u] & 0x80u) != 0u ? 0xFFFFFFFFu : 0xFF000000u;
-                }
-                output[static_cast<size_t>(y) * width + x] = 0xFF000000u | (color & registers[0x50u / 4u]);
-            }
+        const auto columns = std::min(width, ((registers[1u] >> 19u) & 0x7FFu) + 1u);
+        const auto rows = std::min(height, ((registers[1u] >> 8u) & 0x7FFu) + 1u);
+        for (uint32_t y = 0u; y < rows; ++y) {
+            uint32_t* const line = output + static_cast<size_t>(y) * width;
+            if (!RenderDirectRow(registers, line, columns, y)) RenderComposedRow(registers, line, columns, y);
         }
     }
 
 private:
+    static constexpr uint32_t kPageBytes = 4096u;
+    static constexpr uint32_t kNoPage    = 1u;
+
+    const uint8_t* FramebufferWord(uint32_t address) {
+        const uint32_t page = address & ~(kPageBytes - 1u);
+        if (address - page > kPageBytes - 4u) return memory_->TryTranslateRange(address, 4u);
+        if (page != cached_page_) {
+            cached_page_ = page;
+            cached_host_ = memory_->TryTranslateRange(page, kPageBytes);
+        }
+        return cached_host_ ? cached_host_ + (address - page) : memory_->TryTranslateRange(address, 4u);
+    }
+
+    void RenderComposedRow(const Au1300Lcd::Registers& registers, uint32_t* line, uint32_t columns, uint32_t y) {
+        const auto background = 0xFF000000u | registers[2u];
+        for (uint32_t x = 0u; x < columns; ++x) {
+            std::array<Pixel, 2u> pipe{};
+            for (uint32_t i = 0u; i < 4u; ++i) {
+                if ((registers[9u] & (1u << i)) == 0u) continue;
+                const auto index = (0x100u + i * 0x20u) / 4u;
+                const auto control = registers[index + 1u];
+                const auto side = (control >> 29u) & 1u;
+                const auto priority = control >> 30u;
+                if (pipe[side].present && priority < pipe[side].priority) continue;
+                Pixel pixel;
+                if (!WindowPixel(registers, index, x, y, pixel.color)) continue;
+                pixel.present = true;
+                pixel.priority = priority;
+                pipe[side] = pixel;
+            }
+            auto color = background;
+            if (pipe[0u].present || pipe[1u].present) {
+                const bool right = pipe[1u].present &&
+                    (!pipe[0u].present || pipe[1u].priority > pipe[0u].priority);
+                const auto top = right ? 1u : 0u;
+                const auto bottom = top ^ 1u;
+                color = pipe[top].color;
+                if (pipe[bottom].present) color = Blend(color, pipe[bottom].color);
+            }
+            color = Cursor(registers, x, y, color);
+            if ((registers[1u] & 0x40u) != 0u) {
+                color = (registers[1u] & 0x80u) != 0u ? 0xFFFFFFFFu : 0xFF000000u;
+            }
+            line[x] = 0xFF000000u | (color & registers[0x50u / 4u]);
+        }
+    }
+
+    bool CursorOnRow(const Au1300Lcd::Registers& registers, uint32_t y) const {
+        if ((registers[0x30u / 4u] & 1u) == 0u) return false;
+        const auto position = registers[0x34u / 4u];
+        const auto origin_y = position & 0x7FFu;
+        return y >= origin_y && y - origin_y + ((position >> 11u) & 31u) < 32u;
+    }
+
+    bool RenderDirectRow(const Au1300Lcd::Registers& registers, uint32_t* line, uint32_t columns, uint32_t y) {
+        if ((registers[1u] & 0x40u) != 0u || CursorOnRow(registers, y)) return false;
+        uint32_t found = 0u;
+        uint32_t index = 0u;
+        for (uint32_t i = 0u; i < 4u; ++i) {
+            if ((registers[9u] & (1u << i)) == 0u) continue;
+            const auto candidate = (0x100u + i * 0x20u) / 4u;
+            const auto top = (registers[candidate] >> 10u) & 0x7FFu;
+            if (y < top || y - top > (registers[candidate + 1u] & 0x7FFu)) continue;
+            if ((registers[candidate] >> 21u) >= columns) continue;
+            index = candidate;
+            ++found;
+        }
+        const auto mask = registers[0x50u / 4u];
+        const auto background = 0xFF000000u | (registers[2u] & mask);
+        if (found == 0u) {
+            std::fill_n(line, columns, background);
+            return true;
+        }
+        if (found != 1u) return false;
+        const auto origin = registers[index];
+        const auto control = registers[index + 1u];
+        const auto config = registers[index + 2u];
+        const auto format = (control >> 25u) & 15u;
+        const bool wide = format == 12u || format == 13u;
+        const bool half = format == 4u || format == 5u || format == 6u || format == 7u || format == 10u || format == 11u;
+        if ((!wide && !half) || ((config >> 21u) & 3u) != 0u || (config & 0x3000000u) != 0u) return false;
+        const auto left = origin >> 21u;
+        const auto count = std::min(((control >> 11u) & 0x7FFu) + 1u, columns - left);
+        const auto buffer = registers[index + 3u + ((registers[index + 5u] >> 1u) & 1u)];
+        const uint64_t start = static_cast<uint64_t>(buffer) +
+                               static_cast<uint64_t>(y - ((origin >> 10u) & 0x7FFu)) * ((config >> 8u) & 0x1FFFu);
+        const uint64_t bytes = wide ? uint64_t{count} * 4u : ((uint64_t{count} + 1u) / 2u) * 4u;
+        if (start + bytes - 1u > UINT32_MAX) return false;
+        const uint8_t* const source = memory_->TryTranslateRange(start, bytes);
+        if (!source) return false;
+        const bool swap = (control & 0x1000000u) != 0u;
+        std::fill_n(line, left, background);
+        uint32_t* const target = line + left;
+        if (wide) {
+            for (uint32_t x = 0u; x < count; ++x) {
+                const auto color = Decode(cerf::le::U32(source + static_cast<size_t>(x) * 4u), format);
+                target[x] = 0xFF000000u | ((swap ? SwapRedBlue(color) : color) & mask);
+            }
+        } else {
+            const uint32_t* const table = DirectTable(format, swap, mask);
+            const auto first = ((control >> 22u) & 1u) ^ 1u;
+            for (uint32_t x = 0u; x < count; ++x) {
+                const auto word = cerf::le::U32(source + static_cast<size_t>(x / 2u) * 4u);
+                target[x] = table[(word >> (((x & 1u) ^ first) * 16u)) & 0xFFFFu];
+            }
+        }
+        std::fill_n(target + count, columns - left - count, background);
+        return true;
+    }
+
+    const uint32_t* DirectTable(uint32_t format, bool swap, uint32_t mask) {
+        const uint64_t key = (uint64_t{format} << 33u) | (uint64_t{swap} << 32u) | mask;
+        if (direct_table_.empty() || key != direct_key_) {
+            direct_table_.resize(0x10000u);
+            for (uint32_t value = 0u; value < 0x10000u; ++value) {
+                const auto color = Decode(value, format);
+                direct_table_[value] = 0xFF000000u | ((swap ? SwapRedBlue(color) : color) & mask);
+            }
+            direct_key_ = key;
+        }
+        return direct_table_.data();
+    }
+
+    static uint32_t SwapRedBlue(uint32_t color) {
+        return (color & 0xFF00FF00u) | ((color & 0xFFu) << 16u) | ((color >> 16u) & 0xFFu);
+    }
+
+    EmulatedMemory*       memory_      = nullptr;
+    uint32_t              cached_page_ = kNoPage;
+    const uint8_t*        cached_host_ = nullptr;
+    std::vector<uint32_t> direct_table_;
+    uint64_t              direct_key_  = 0u;
+
     struct Pixel {
         uint32_t color = 0u;
         uint32_t priority = 0u;
@@ -167,7 +274,7 @@ private:
             const uint64_t address = static_cast<uint64_t>(buffer) + static_cast<uint64_t>(y) * stride +
                                      (static_cast<uint64_t>(x) * bits / 32u) * 4u;
             if (address > UINT32_MAX) return false;
-            const auto* source = emu_.Get<EmulatedMemory>().TryTranslateRange(static_cast<uint32_t>(address), 4u);
+            const auto* source = FramebufferWord(static_cast<uint32_t>(address));
             if (!source) return false;
             value = cerf::le::U32(source);
             const auto order = (control >> 22u) & 3u;
@@ -191,7 +298,7 @@ private:
                 color = corrected;
             }
         }
-        if ((control & 0x1000000u) != 0u) color = (color & 0xFF00FF00u) | ((color & 0xFFu) << 16u) | ((color >> 16u) & 0xFFu);
+        if ((control & 0x1000000u) != 0u) color = SwapRedBlue(color);
         if ((origin & 2u) != 0u) color = (color & 0xFFFFFFu) | (((origin >> 2u) & 0xFFu) << 24u);
         return true;
     }
