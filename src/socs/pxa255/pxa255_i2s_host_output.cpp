@@ -26,7 +26,7 @@ bool Pxa255I2sHostOutput::ShouldRegister() {
 }
 
 void Pxa255I2sHostOutput::OnReady() {
-    host_.Start(emu_.Get<Fatal>(), emu_.Get<InstanceThreads>(), "Pxa255I2s", 0u, kChannels, kBits);
+    host_.Start(emu_, "Pxa255I2s", 0u, kChannels, kBits);
     emu_.Get<AudioActivityWidget>().NotePresent();
 }
 

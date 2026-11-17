@@ -48,7 +48,7 @@ public:
         wiring_   = &emu_.Get<Sh77xxPortWiring>();
         activity_ = &emu_.Get<AudioActivityWidget>();
         activity_->NotePresent();
-        paced_.Start(emu_.Get<Fatal>(), emu_.Get<InstanceThreads>(), "Hp600Speaker", kRenderHz, kRenderChannels,
+        paced_.Start(emu_, "Hp600Speaker", kRenderHz, kRenderChannels,
                      kRenderBits);
         samples_.SetRate(clock_->ClockRate(), kRenderRate);
         clock_->RegisterRateListener([this] { samples_.Rescale(clock_->Cycles(), clock_->ClockRate(), kRenderRate); });

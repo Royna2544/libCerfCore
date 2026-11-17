@@ -1,23 +1,24 @@
 #pragma once
 
 #include "dynamic_rate_resampler.h"
+#include "wave_recorder.h"
 #include "../platform/wave_out_sink.h"
 
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <string>
 
 namespace cerfcore {
 
+class CerfEmulator;
 class Fatal;
-class InstanceThreads;
 
 class PacedWaveOut {
 public:
     static constexpr uint32_t kMaxBlock = 0x2000u;
 
-    void Start(Fatal& fatal, InstanceThreads& threads, const char* log_tag, uint32_t rate_hz, uint16_t channels,
-               uint16_t bits);
+    void Start(CerfEmulator& emu, const char* log_tag, uint32_t rate_hz, uint16_t channels, uint16_t bits);
     void Stop();
     void SetFormat(uint32_t rate_hz, uint16_t channels, uint16_t bits);
 
@@ -44,6 +45,8 @@ private:
     DevicePosition DevicePositionLocked() const;
     void RefreshPositionLocked();
     uint32_t StreamFrameBytes() const;
+    void OpenRecordingLocked();
+    void RecordHeardLocked(const uint8_t* bytes, uint32_t length);
     uint32_t StreamBlockBytes() const;
 
     static constexpr uint32_t kCommandSetFormat    = 1;
@@ -93,6 +96,11 @@ private:
     std::atomic<uint32_t> fmt_rate_{0};
     std::atomic<uint16_t> fmt_channels_{0};
     std::atomic<uint16_t> fmt_bits_{0};
+    std::string           record_dir_;
+    uint32_t              record_stream_  = 0;
+    WaveRecorder          record_guest_;
+    WaveRecorder          record_heard_;
+    double                heard_cursor_s_ = 0.0;
 };
 
 }

@@ -2,19 +2,34 @@
 
 #include "../platform/wave_pcm_format.h"
 
+#include <cerfcore/core/cerf_emulator.h>
+#include <cerfcore/core/device_config.h>
 #include <cerfcore/core/fatal.h>
+#include <cerfcore/core/instance_threads.h>
 #include <cerfcore/core/log.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 
 namespace cerfcore {
 
-void PacedWaveOut::Start(Fatal& fatal, InstanceThreads& threads, const char* log_tag, uint32_t rate_hz,
-                         uint16_t channels, uint16_t bits) {
-    fatal_   = &fatal;
-    log_tag_ = log_tag;
+namespace {
+
+double WallSeconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+}
+
+void PacedWaveOut::Start(CerfEmulator& emu, const char* log_tag, uint32_t rate_hz, uint16_t channels,
+                         uint16_t bits) {
+    Fatal&           fatal   = emu.Get<Fatal>();
+    InstanceThreads& threads = emu.Get<InstanceThreads>();
+    fatal_      = &fatal;
+    log_tag_    = log_tag;
+    record_dir_ = emu.Get<DeviceConfig>().audio_record_dir;
     fmt_rate_.store(rate_hz, std::memory_order_release);
     fmt_channels_.store(channels, std::memory_order_release);
     fmt_bits_.store(bits, std::memory_order_release);
@@ -29,7 +44,52 @@ void PacedWaveOut::Start(Fatal& fatal, InstanceThreads& threads, const char* log
         log_tag);
 }
 
-void PacedWaveOut::Stop() { sink_.Stop(); }
+void PacedWaveOut::Stop() {
+    sink_.Stop();
+    std::lock_guard<std::mutex> lk(audio_mutex_);
+    record_guest_.Close();
+    record_heard_.Close();
+}
+
+void PacedWaveOut::OpenRecordingLocked() {
+    record_guest_.Close();
+    record_heard_.Close();
+    if (record_dir_.empty()) return;
+    std::string tag = log_tag_;
+    for (char& ch : tag) {
+        if (ch == ' ' || ch == '/' || ch == '\\') ch = '_';
+    }
+    char name[64];
+    std::snprintf(name, sizeof(name), "-%03u-", ++record_stream_);
+    const std::string stem = record_dir_ + "/" + tag + name;
+    const uint32_t rate     = fmt_rate_.load(std::memory_order_acquire);
+    const uint16_t channels = fmt_channels_.load(std::memory_order_acquire);
+    const uint16_t bits     = fmt_bits_.load(std::memory_order_acquire);
+    if (!record_guest_.Open(stem + "guest.wav", rate, channels, bits) ||
+        !record_heard_.Open(stem + "heard.wav", rate, channels, bits)) {
+        LOG(Caution, "[%s] cannot record audio stream to %s*.wav\n", log_tag_, stem.c_str());
+        record_guest_.Close();
+        record_heard_.Close();
+        return;
+    }
+    heard_cursor_s_ = WallSeconds();
+    LOG(Periph, "[%s] recording audio stream to %sguest.wav and %sheard.wav\n", log_tag_, stem.c_str(),
+        stem.c_str());
+}
+
+void PacedWaveOut::RecordHeardLocked(const uint8_t* bytes, uint32_t length) {
+    if (!record_heard_.IsOpen()) return;
+    const uint32_t frame = StreamFrameBytes();
+    const uint32_t rate  = record_heard_.RateHz();
+    if (frame == 0u || rate == 0u) return;
+    const double now = WallSeconds();
+    if (now > heard_cursor_s_) {
+        record_heard_.AppendSilence(static_cast<uint64_t>((now - heard_cursor_s_) * rate));
+        heard_cursor_s_ = now;
+    }
+    record_heard_.Append(bytes, length);
+    heard_cursor_s_ += static_cast<double>(length / frame) / rate;
+}
 
 void PacedWaveOut::SetFormat(uint32_t rate_hz, uint16_t channels, uint16_t bits) {
     if (rate_hz != fmt_rate_.load(std::memory_order_acquire) ||
@@ -102,6 +162,7 @@ void PacedWaveOut::PlayLocked(const uint8_t* bytes, uint32_t length) {
     std::memcpy(buffers_[slot], bytes, length);
     slot_length_[slot] = length;
 
+    RecordHeardLocked(bytes, length);
     sink_.Play(slot, buffers_[slot], length);
     slot_busy_[slot]    = true;
     ++outstanding_;
@@ -159,6 +220,7 @@ void PacedWaveOut::BeginAudioOut() {
     start_frames_   = static_cast<double>(kStartBlocks * kHostBlockFrames);
     finished_       = false;
     stream_bytes_   = 0;
+    OpenRecordingLocked();
     output_active_.store(true, std::memory_order_release);
 }
 
@@ -166,6 +228,7 @@ void PacedWaveOut::FinishAudioOut() {
     EndStreamBlock();
     std::lock_guard<std::mutex> lk(audio_mutex_);
     finished_ = true;
+    record_guest_.Close();
     if (!priming_) return;
     priming_ = false;
     LOG(Periph, "[%s] stream ended before the start threshold, %u blocks queued\n",
@@ -345,6 +408,7 @@ bool PacedWaveOut::QueueOutput(const void* host_bytes, uint32_t length) {
     std::lock_guard<std::mutex> lk(audio_mutex_);
     if (!output_active_.load(std::memory_order_acquire)) return false;
 
+    record_guest_.Append(host_bytes, length);
     length     = RateMatchLocked(static_cast<const uint8_t*>(host_bytes), length);
     host_bytes = rate_out_;
     if (length == 0) return true;

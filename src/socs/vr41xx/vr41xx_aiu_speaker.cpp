@@ -34,7 +34,7 @@ void Vr41xxAiuSpeaker::AttachHost() {
     Attach();
     switch_    = &emu_.Get<Vr41xxAudioSwitch>();
     switch_on_ = switch_->SpeakerOn();
-    paced_.Start(emu_.Get<Fatal>(), emu_.Get<InstanceThreads>(), "Vr41xxAiu", 0, 1, 16);
+    paced_.Start(emu_, "Vr41xxAiu", 0, 1, 16);
     emu_.Get<AudioActivityWidget>().NotePresent();
 }
 

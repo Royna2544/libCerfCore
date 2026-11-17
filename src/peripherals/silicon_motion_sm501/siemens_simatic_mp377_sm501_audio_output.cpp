@@ -21,7 +21,7 @@ bool SiemensSimaticMp377Sm501AudioOutput::ShouldRegister() {
 
 void SiemensSimaticMp377Sm501AudioOutput::OnReady() {
     widget_ = &emu_.Get<AudioActivityWidget>();
-    output_.Start(emu_.Get<Fatal>(), emu_.Get<InstanceThreads>(), "MP377SM501Audio", 0, 2, 16);
+    output_.Start(emu_, "MP377SM501Audio", 0, 2, 16);
     emu_.Get<GuestCpuReset>().RegisterResetListener([this](ResetLineKind) {
         if (emu_.Get<GuestCpuReset>().DeliveredResetWasResume()) return;
         ResetDevice();

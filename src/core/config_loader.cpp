@@ -319,6 +319,9 @@ void ConfigLoader::LoadInto(DeviceConfig& config) {
         const char* v = nullptr;
         if (strcmp(a, kArgDisableNetwork) == 0) {
             config.network_enabled = false;
+        } else if (ReadCliOption(a, kArgRecordAudio, v)) {
+            if (!v[0]) Reader().Fail("(command line)", "--record-audio needs a folder");
+            config.audio_record_dir = v;
         } else if (ReadCliOption(a, kArgBoardId, v)) {
             config.board_id = v;
         } else if (ReadCliOption(a, kArgRomPrimary, v)) {

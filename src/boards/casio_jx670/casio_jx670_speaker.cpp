@@ -21,7 +21,7 @@ bool CasioJx670Speaker::ShouldRegister() {
 void CasioJx670Speaker::OnReady() {
     mem_      = &emu_.Get<EmulatedMemory>();
     activity_ = &emu_.Get<AudioActivityWidget>();
-    paced_.Start(emu_.Get<Fatal>(), emu_.Get<InstanceThreads>(), "Em500Audio", 0, 0, 0);
+    paced_.Start(emu_, "Em500Audio", 0, 0, 0);
     activity_->NotePresent();
 }
 

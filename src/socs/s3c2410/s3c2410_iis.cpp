@@ -73,7 +73,7 @@ public:
             [this](ResetLineKind) { Reset(); });
         emu_.Get<PeripheralDispatcher>().Register(this);
         emu_.Get<S3C2410Dma>().RegisterRequester(S3C2410DmaSource::kI2sSdo, this);
-        audio_out_.Start(emu_.Get<Fatal>(), emu_.Get<InstanceThreads>(), "S3C2410Iis", 0, 0, 0);
+        audio_out_.Start(emu_, "S3C2410Iis", 0, 0, 0);
         emu_.Get<AudioActivityWidget>().NotePresent();
     }
 

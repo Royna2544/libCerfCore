@@ -21,6 +21,7 @@ inline constexpr char kArgScreenDpi[]      = "--screen-dpi=";
 inline constexpr char kArgScreenBpp[]      = "--screen-bpp=";
 inline constexpr char kArgScreenRefreshRate[] = "--screen-refresh-rate=";
 inline constexpr char kArgDisableNetwork[] = "--disable-network";
+inline constexpr char kArgRecordAudio[]   = "--record-audio=";
 inline constexpr char kArgGuestAdditions[] = "--guest-additions";
 inline constexpr char kArgGaColorScheme[]  = "--ga-color-scheme=";
 inline constexpr char kArgGaFontSize[]     = "--ga-font-size=";

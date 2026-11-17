@@ -111,7 +111,7 @@ void OdoAudioPlayer::OnReady() {
     event_ = clock_->Add([this] { OnPageEnd(); });
     clock_->RegisterRateListener([this] { OnRateChange(); });
     emu_.Get<GuestCpuReset>().RegisterResetListener([this](ResetLineKind) { ResetLine(); });
-    out_.Start(emu_.Get<Fatal>(), emu_.Get<InstanceThreads>(), "OdoAudio", static_cast<uint32_t>(kSampleRate), kChannels,
+    out_.Start(emu_, "OdoAudio", static_cast<uint32_t>(kSampleRate), kChannels,
                kBitsPerSample);
     emu_.Get<AudioActivityWidget>().NotePresent();
 }

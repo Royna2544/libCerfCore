@@ -40,7 +40,7 @@ public:
         frames_.Anchor(clock_->Cycles(), 0u);
         pcm_frame_ = FrameNow();
         pcm_event_ = clock_->Add([this] { AdvancePcm(); Publish(); ArmPcm(); });
-        output_.Start(emu_.Get<Fatal>(), emu_.Get<InstanceThreads>(), "Au1300 AC97", 0u, 2u, 16u);
+        output_.Start(emu_, "Au1300 AC97", 0u, 2u, 16u);
         emu_.Get<AudioActivityWidget>().NotePresent();
         clock_->RegisterRateListener([this] {
             AdvancePcm();
