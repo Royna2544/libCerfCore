@@ -44,6 +44,7 @@ inline constexpr char kShareFolderMountPoint[] = "shared_folder_mount_point";
 inline constexpr char kAutorun[]               = "autorun";
 inline constexpr char kFullScreen[]            = "full_screen";
 inline constexpr char kDoubleTapHelper[]       = "double_tap_helper";
+inline constexpr char kAudioRealClock[]        = "audio_real_clock";
 inline constexpr char kHud[]                   = "hud";
 inline constexpr char kHudNone[]               = "none";
 inline constexpr char kShaders[]               = "shaders";

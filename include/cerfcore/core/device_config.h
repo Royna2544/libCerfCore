@@ -108,6 +108,7 @@ struct DeviceConfig : public Service {
     std::string network_forward_udp;
 
     std::string audio_record_dir;
+    bool        audio_real_clock = false;
 
     std::string              rom_primary;
     std::vector<std::string> rom_extensions;

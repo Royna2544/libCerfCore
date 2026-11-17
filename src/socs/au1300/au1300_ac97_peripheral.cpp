@@ -3,12 +3,14 @@
 #include "au1300_gpic_model.h"
 #include "au1300_dma_model.h"
 #include "../cycle_anchored_counter.h"
+#include "../../core/virtual_clock.h"
 #include "../../host/paced_wave_out.h"
 #include "../../host/audio_activity_widget.h"
 #include "../../peripherals/ac97_codec.h"
 #include "../../peripherals/peripheral_dispatcher.h"
 #include <cerfcore/boards/board_context.h>
 #include <cerfcore/core/cerf_emulator.h>
+#include <cerfcore/core/device_config.h>
 #include <cerfcore/core/fatal.h>
 #include <cerfcore/core/instance_threads.h>
 #include <cerfcore/peripherals/peripheral_base.h>
@@ -25,6 +27,9 @@ namespace cerfcore {
 namespace {
 
 constexpr uint32_t kEvents = 0x03003F30u;
+constexpr uint64_t kFrameRate = 48000u;
+constexpr uint64_t kNsPerSecond = 1000000000u;
+constexpr uint64_t kMaxWallDebtFrames = 4800u;
 
 class Au1300Ac97Peripheral : public Peripheral, public Ac97FrameSource {
 public:
@@ -38,6 +43,10 @@ public:
         codec_->AttachFrameSource(this);
         frames_.SetRate(clock_->ClockRate(), {48000u, 1u});
         frames_.Anchor(clock_->Cycles(), 0u);
+        wall_paced_ = emu_.Get<DeviceConfig>().audio_real_clock;
+        wall_       = &emu_.Get<VirtualClock>();
+        wall_anchor_ns_ = wall_->NowNs();
+        if (wall_paced_) LOG(Periph, "[Au1300 AC97] PCM frame clock follows the host clock\n");
         pcm_frame_ = FrameNow();
         pcm_event_ = clock_->Add([this] { AdvancePcm(); Publish(); ArmPcm(); });
         output_.Start(emu_, "Au1300 AC97", 0u, 2u, 16u);
@@ -153,7 +162,7 @@ public:
     }
     bool FrameAt(uint64_t cycle, uint64_t& frame) const override {
         if (!linked_) return false;
-        frame = frame_base_ + frames_.TicksSince(cycle);
+        frame = wall_paced_ ? FrameNow() : frame_base_ + frames_.TicksSince(cycle);
         return true;
     }
     void OnCodecStreamChange() override { RefreshLink(); Publish(); ArmPcm(); }
@@ -197,6 +206,8 @@ public:
         }
         frames_.SetRate(clock_->ClockRate(), {48000u, 1u});
         frames_.AnchorAt(clock_->Cycles(), 0u, restored_phase_);
+        wall_anchor_frame_ = frame_base_;
+        wall_anchor_ns_    = wall_->NowNs();
     }
     void PostRestore() override {
         output_.StopAudioOut();
@@ -217,7 +228,15 @@ private:
         samples_.clear();
         if (clock_) pcm_frame_ = FrameNow();
     }
-    uint64_t FrameNow() const { return frame_base_ + frames_.TicksSince(clock_->Cycles()); }
+    uint64_t FrameNow() const {
+        if (!wall_paced_) return frame_base_ + frames_.TicksSince(clock_->Cycles());
+        const uint64_t elapsed = static_cast<uint64_t>(std::max<int64_t>(0, wall_->NowNs() - wall_anchor_ns_));
+        return wall_anchor_frame_ + elapsed / kNsPerSecond * kFrameRate + elapsed % kNsPerSecond * kFrameRate / kNsPerSecond;
+    }
+    uint64_t CyclesPerFrame() const {
+        const auto rate = clock_->ClockRate();
+        return std::max<uint64_t>(1u, rate.num / (rate.den * kFrameRate));
+    }
     void RefreshLink() {
         const bool on = registers_[0u] == 0x24u && registers_[1u] == 3u &&
             (registers_[2u] & (1u << 26u)) != 0u && (registers_[9u] & 2u) == 0u &&
@@ -266,6 +285,12 @@ private:
     }
     void ArmPcm() {
         if (!linked_ || !tx_active_) { clock_->Disarm(pcm_event_); return; }
+        if (wall_paced_) {
+            const uint64_t wait = pcm_frame_ < FrameNow() ? std::max<uint64_t>(1u, CyclesPerFrame() / 4u)
+                                                          : CyclesPerFrame();
+            clock_->Arm(pcm_event_, clock_->Cycles() + wait);
+            return;
+        }
         clock_->Arm(pcm_event_, frames_.CycleOfTick(pcm_frame_ + 1u - frame_base_));
     }
     void StopTx() {
@@ -303,8 +328,13 @@ private:
             gain[channel] = std::pow(10.0, (12.0 - 1.5 * (((master >> shift) & 31u) + ((mixer >> shift) & 31u))) / 20.0);
         }
         while (pcm_frame_ < now && tx_active_) {
+            const uint32_t step = codec_->PcmOutEveryFrame() ? 48000u : codec_->DacRateHz();
+            if (wall_paced_ && dac_phase_ + step >= 48000u && tx_fifo_.size() < 2u &&
+                now - pcm_frame_ <= kMaxWallDebtFrames) {
+                break;
+            }
             ++pcm_frame_;
-            dac_phase_ += codec_->PcmOutEveryFrame() ? 48000u : codec_->DacRateHz();
+            dac_phase_ += step;
             if (dac_phase_ < 48000u) continue;
             dac_phase_ -= 48000u;
             for (uint32_t channel = 0u; channel < 2u; ++channel) {
@@ -333,6 +363,10 @@ private:
     bool tx_active_ = false;
     bool tx_stopping_ = false;
     PacedWaveOut output_;
+    bool wall_paced_ = false;
+    VirtualClock* wall_ = nullptr;
+    int64_t wall_anchor_ns_ = 0;
+    uint64_t wall_anchor_frame_ = 0;
     std::vector<int16_t> samples_;
     bool output_active_ = false;
 };
