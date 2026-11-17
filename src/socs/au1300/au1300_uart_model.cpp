@@ -27,6 +27,18 @@ void Au1300UartModel::Reset() {
     receive_deadline_ = UINT64_MAX;
     modem_status_ = external_modem_;
     next_event_ = 0u;
+    DropWire();
+}
+
+void Au1300UartModel::DropWire() {
+    const bool had_wire = !rx_wire_.empty();
+    rx_wire_.clear();
+    rx_deadline_ = UINT64_MAX;
+    if (had_wire && hooks_.receive_idle) hooks_.receive_idle();
+}
+
+uint64_t Au1300UartModel::BitCycles() const {
+    return 16ull * (regs_.at(0x28u) & 0xFFFFu) * host_.Sys().PeripheralDivider();
 }
 
 uint64_t Au1300UartModel::FrameCycles() const {
@@ -53,7 +65,9 @@ void Au1300UartModel::ClockChanged(uint64_t previous, uint64_t current) {
     if (shift_) deadline_ = rescale(deadline_);
     receive_deadline_ = rescale(receive_deadline_);
     break_deadline_ = rescale(break_deadline_);
+    rx_deadline_ = rescale(rx_deadline_);
     Publish();
+    if (hooks_.line_changed) hooks_.line_changed();
 }
 
 uint32_t Au1300UartModel::ReceiveThreshold() const {
@@ -97,7 +111,7 @@ void Au1300UartModel::Publish() {
     uint64_t next = working && shift_ ? deadline_ : UINT64_MAX;
     if (working && !receive_fifo_.empty() && (regs_.at(8u) & 1u) != 0u &&
         TimeoutCycle() > host_.Cycles()) next = std::min(next, TimeoutCycle());
-    if (working) next = std::min(next, break_deadline_);
+    if (working) next = std::min(next, std::min(break_deadline_, rx_deadline_));
     next_event_ = next;
     host_.SetUartDeadline(index_, next);
 }
@@ -139,7 +153,33 @@ void Au1300UartModel::Start(uint64_t cycle) {
 }
 
 void Au1300UartModel::Emit(uint8_t value) {
+    if (hooks_.transmit && hooks_.transmit(value)) return;
     host_.EmitUartChar(index_, value, line_);
+}
+
+void Au1300UartModel::AcceptWire(const std::vector<uint8_t>& bytes) {
+    Advance();
+    if (bytes.empty()) return;
+    if (regs_.at(0x100u) != 3u) {
+        if (rx_wire_.empty() && hooks_.receive_idle) hooks_.receive_idle();
+        return;
+    }
+    if (rx_wire_.empty()) rx_deadline_ = host_.Cycles() + FrameCycles();
+    rx_wire_.insert(rx_wire_.end(), bytes.begin(), bytes.end());
+    Publish();
+}
+
+void Au1300UartModel::ShiftInWire(uint64_t now) {
+    while (rx_deadline_ <= now) {
+        if ((regs_.at(0x18u) & 0x10u) == 0u) Receive(rx_wire_.front(), 0u, rx_deadline_);
+        rx_wire_.pop_front();
+        if (!rx_wire_.empty()) {
+            rx_deadline_ += FrameCycles();
+            continue;
+        }
+        rx_deadline_ = UINT64_MAX;
+        if (hooks_.receive_idle) hooks_.receive_idle();
+    }
 }
 
 void Au1300UartModel::Receive(uint8_t value, uint8_t errors, uint64_t cycle) {
@@ -168,6 +208,7 @@ void Au1300UartModel::Advance() {
             break_received_ = true;
             break_deadline_ = UINT64_MAX;
         }
+        ShiftInWire(now);
     }
     Publish();
 }
@@ -240,6 +281,7 @@ void Au1300UartModel::Write(uint32_t offset, uint32_t value) {
             if (shift_) deadline_ += elapsed;
             if (receive_deadline_ != UINT64_MAX) receive_deadline_ += elapsed;
             if (break_deadline_ != UINT64_MAX) break_deadline_ += elapsed;
+            if (rx_deadline_ != UINT64_MAX) rx_deadline_ += elapsed;
         }
     }
     if (offset == 0x10u) {
@@ -261,7 +303,9 @@ void Au1300UartModel::Write(uint32_t offset, uint32_t value) {
     }
     regs_[offset] = value;
     if (offset == 0x28u) ClockChanged(previous_divisor, value);
+    if (offset == 0x14u && hooks_.line_changed) hooks_.line_changed();
     if (offset == 0x18u || offset == 0x104u) UpdateModem();
+    if (offset == 0x18u && hooks_.control_changed) hooks_.control_changed();
     const bool loop_break = (regs_.at(0x18u) & 0x10u) != 0u && (regs_.at(0x14u) & 0x40u) != 0u;
     if (!loop_break) {
         break_received_ = false;
@@ -293,6 +337,8 @@ void Au1300UartModel::SaveState(StateWriter& w) {
     }
     w.Write("shift_present", shift_.has_value());
     if (shift_) w.Write("shift_value", *shift_);
+    w.Write("rx_deadline_", rx_deadline_);
+    au1300_state::SaveBytes(w, rx_wire_);
 }
 
 void Au1300UartModel::RestoreState(StateReader& r) {
@@ -326,6 +372,9 @@ void Au1300UartModel::RestoreState(StateReader& r) {
         r.Read("shift_value", value);
         shift_ = value;
     }
+    r.Read("rx_deadline_", rx_deadline_);
+    au1300_state::RestoreBytes(r, rx_wire_, kWireCapacity);
+    if (rx_wire_.empty() != (rx_deadline_ == UINT64_MAX)) r.Reject("Au1300 UART RX wire state");
     line_.clear();
     if ((regs_.at(0x108u) & 3u) != 0u) r.Reject("Au1300 UART bidirectional mode");
 }
