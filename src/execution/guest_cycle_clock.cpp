@@ -18,6 +18,7 @@ namespace {
 constexpr uint64_t kNsPerSec        = 1000000000ull;
 constexpr int64_t  kThrottleSliceNs = 1000000;
 constexpr int64_t  kMaxCatchUpNs    = 100000000;
+constexpr uint32_t kHintSlices      = 16u;
 constexpr uint64_t kNever           = UINT64_MAX;
 
 }
@@ -214,10 +215,26 @@ void GuestCycleClock::SleepUntilWallNs(int64_t target_ns) {
     }
 }
 
+void GuestCycleClock::ReportPace(int64_t wall) {
+    if (!hint_tried_) {
+        hint_tried_ = true;
+        pace_hint_.OpenForCurrentThread(kThrottleSliceNs * kHintSlices);
+        hint_mark_ns_ = wall;
+        return;
+    }
+    if (!pace_hint_.Open()) return;
+    hint_run_ns_ += wall - hint_mark_ns_;
+    if (++hint_slices_ < kHintSlices) return;
+    pace_hint_.ReportWork(hint_run_ns_);
+    hint_run_ns_ = 0;
+    hint_slices_ = 0;
+}
+
 void GuestCycleClock::OnThrottle() {
     const uint64_t now    = Cycles();
     const int64_t  target = TargetWallNs(now);
     const int64_t  wall   = wall_->NowNs();
+    ReportPace(wall);
     if (target > wall) {
         SleepUntilWallNs(target);
 #if CERF_DEV_MODE
@@ -244,6 +261,7 @@ void GuestCycleClock::OnThrottle() {
 #if CERF_DEV_MODE
     if (++stat_throttles_ % 1000u == 0u) LogSecond();
 #endif
+    hint_mark_ns_ = wall_->NowNs();
     Arm(throttle_, now + NsToCycles(kThrottleSliceNs));
 }
 
@@ -273,7 +291,9 @@ void GuestCycleClock::WaitStep(void* wake_event) {
 #if CERF_DEV_MODE
         stat_idle_wait_ns_ += target - wall;
 #endif
-        wall = wall_->NowNs();
+        const int64_t woke = wall_->NowNs();
+        hint_mark_ns_ += woke - wall;
+        wall = woke;
     }
     uint64_t advanced = next;
     if (wall < target) {

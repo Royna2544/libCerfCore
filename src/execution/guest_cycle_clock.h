@@ -10,6 +10,7 @@
 #include <cerfcore/core/force_inline.h>
 #include <cerfcore/core/service.h>
 #include "../core/tick_scale.h"
+#include "../platform/host_performance_hint.h"
 #include "../platform/host_wait_timer.h"
 #include <cerfengine/clock_host.h>
 #include <cerfcore/core/callback_list.h>
@@ -104,6 +105,7 @@ private:
     uint64_t NextArmed() const;
     void     Publish(uint64_t now);
     void     OnThrottle();
+    void     ReportPace(int64_t wall);
     int64_t  TargetWallNs(uint64_t cycle) const;
     void     SleepUntilWallNs(int64_t target_ns);
 
@@ -115,6 +117,11 @@ private:
     Event*        throttle_    = nullptr;
     VirtualClock* wall_        = nullptr;
     host_platform::HostWaitTimer timer_;
+    host_platform::HostPerformanceHint pace_hint_;
+    int64_t       hint_mark_ns_ = 0;
+    int64_t       hint_run_ns_  = 0;
+    uint32_t      hint_slices_  = 0;
+    bool          hint_tried_   = false;
     Rate          rate_        = Rate{1u, 1u};
     uint64_t      rate_requests_ = 0;
     ExactScale    ns_to_cycles_{emu_};
