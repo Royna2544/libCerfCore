@@ -71,7 +71,7 @@ private:
             if (index >= st->nb_tlb) {
                 static_cast<MipsMmuR4000*>(self)->emu_.Get<Fatal>().Die("MIPS TLB index %u exceeds its size", index);
             }
-            FlushAll(ctx);
+            InvalidateTlb(ctx, index, false);
             FillTlb(st, index);
             return;
         }
@@ -99,7 +99,7 @@ private:
         /* QEMU r4k_helper_tlbwr (tlb_helper.c). */
         const uint32_t r = static_cast<MipsMmuR4000*>(self)->RandomIndex(st);
         if (static_cast<MipsMmuR4000*>(self)->mips32r1_) {
-            FlushAll(ctx);
+            InvalidateTlb(ctx, r, false);
             FillTlb(st, r);
             return;
         }
@@ -234,22 +234,9 @@ private:
             return;
         }
         const uint32_t mask = e.page_mask | cerfengine::MipsPairMinMask(st->min_page_shift);
-        if (e.v0) {
-            uint32_t addr = e.vpn & ~mask;
-            const uint32_t end = addr | (mask >> 1);
-            while (addr < end) {
-                ctx.InvalidatePage(addr);
-                addr += 0x1000u;
-            }
-        }
-        if (e.v1) {
-            uint32_t addr = (e.vpn & ~mask) | ((mask >> 1) + 1u);
-            const uint32_t end = addr | mask;
-            while (addr - 1u < end) {
-                ctx.InvalidatePage(addr);
-                addr += 0x1000u;
-            }
-        }
+        const uint32_t half = (mask >> 1) + 1u;
+        if (e.v0) ctx.InvalidateRange(e.vpn & ~mask, half);
+        if (e.v1) ctx.InvalidateRange((e.vpn & ~mask) | half, half);
     }
 
     static void FlushExtra(cerfengine::MipsTlbContext& ctx, uint32_t first) {
