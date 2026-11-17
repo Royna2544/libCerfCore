@@ -14,7 +14,7 @@ namespace cerfcore {
 
 void SdMemoryCard::OnReady() {
     const auto path = ImagePath();
-    if (!image_.Open(path) || image_.Size() < 4096u || image_.Size() > (32ull << 30u)) {
+    if (!image_.Open(path, ImageWritable()) || image_.Size() < 4096u || image_.Size() > (32ull << 30u)) {
         emu_.Get<Fatal>().UserError("SD image open/geometry path=%s bytes=%llu", path.c_str(),
                                    static_cast<unsigned long long>(image_.Size()));
     }
@@ -24,8 +24,8 @@ void SdMemoryCard::OnReady() {
     uint32_t csd[4]{};
     BuildCsd(csd);
     emu_.Get<GuestCpuReset>().RegisterResetListener([this](ResetLineKind) { Reset(); });
-    LOG(Boot, "SD slot=%u input=%s bytes=%llu volatile=1\n", SlotIndex(), path.c_str(),
-        static_cast<unsigned long long>(image_.Size()));
+    LOG(Boot, "SD slot=%u input=%s bytes=%llu volatile=%u\n", SlotIndex(), path.c_str(),
+        static_cast<unsigned long long>(image_.Size()), image_.Persistent() ? 0u : 1u);
 }
 
 void SdMemoryCard::Reset() {

@@ -60,6 +60,7 @@ inline constexpr char kUsbDisks[]              = "usb_disks";
 inline constexpr char kFile[]                  = "file";
 inline constexpr char kInsertOnLaunch[]        = "insert_on_launch";
 inline constexpr char kCid[]                   = "cid";
+inline constexpr char kWritable[]              = "writable";
 inline constexpr char kCpuConfig[]             = "cpu_config";
 inline constexpr char kThrottleMultiplier[]    = "throttle_multiplier";
 inline constexpr char kCpuRateMultiplier[]     = "cpu_rate_multiplier";

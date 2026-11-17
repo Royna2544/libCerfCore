@@ -25,6 +25,7 @@ public:
 protected:
     virtual std::string ImagePath() const = 0;
     virtual SdCardCid CardCid() const = 0;
+    virtual bool ImageWritable() const { return false; }
 
 private:
     uint32_t Status(uint32_t state) const;

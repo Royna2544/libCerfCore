@@ -25,6 +25,7 @@ protected:
         const auto& config = emu_.Get<DeviceConfig>();
         return ResolveDeviceFile(config.device_name, Entry().file);
     }
+    bool ImageWritable() const override { return Entry().writable; }
     SdCardCid CardCid() const override {
         if (Entry().cid) return *Entry().cid;
         return {0xFFu, 'C', 'E', 'I', 'N', 'A', 'V', 'I', 0x10u, 0u, 0u, 0x25u, 0x44u, 0x01u, 0xABu, 0u};

@@ -244,6 +244,9 @@ void ConfigLoader::LoadUsbMedia(const json& packages, const char* key, bool sd,
             card.cid = ParseSdCardCid(Reader().ReadOptString(e, config_key::kCid, path, entry));
             if (!card.cid) Reader().Fail(path, "'" + cid_key + "' must contain exactly 32 hexadecimal digits");
         }
+        card.writable = Reader().ReadOptBool(e, config_key::kWritable, path, entry);
+        if (card.writable && !sd)
+            Reader().Fail(path, "'" + CfgKeyPath({entry, config_key::kWritable}) + "' applies only to SD cards");
         if (card.insert_on_launch && launch)
             Reader().Fail(path, "'" + CfgKeyPath({entry, config_key::kInsertOnLaunch}) +
                                     "' can be true for one image only");

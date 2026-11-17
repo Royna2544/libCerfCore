@@ -8,12 +8,17 @@
 
 namespace cerfcore {
 
-bool VolatileSectorImage::Open(const std::string& path) {
+bool VolatileSectorImage::Open(const std::string& path, bool persistent) {
     file_.Close();
     writes_.clear();
     erases_.clear();
-    if (!file_.Open(path, host_platform::FileMode::kReadExisting) || !file_.Size(size_) ||
+    persistent_ = persistent;
+    identity_   = 0u;
+    const auto mode = persistent ? host_platform::FileMode::kReadWriteExisting
+                                 : host_platform::FileMode::kReadExisting;
+    if (!file_.Open(path, mode) || !file_.Size(size_) ||
         size_ < kSectorBytes || size_ % kSectorBytes != 0u) return false;
+    if (persistent) return true;
     // FNV-1a-64 identifies the complete base for snapshot compatibility. It is
     // not an authenticity check. Only the overlay, not the base, is serialized.
     identity_ = 0xCBF29CE484222325ull;
@@ -46,12 +51,18 @@ bool VolatileSectorImage::Read(uint64_t sector, uint8_t* destination) {
 
 bool VolatileSectorImage::Write(uint64_t sector, const uint8_t* source) {
     if (sector >= size_ / kSectorBytes) return false;
+    if (persistent_) {
+        uint32_t done = 0u;
+        return file_.SeekTo(sector * kSectorBytes) && file_.Write(source, kSectorBytes, done) &&
+               done == kSectorBytes;
+    }
     std::memcpy(writes_[sector].data(), source, kSectorBytes);
     return true;
 }
 
 bool VolatileSectorImage::Erase(uint64_t first, uint64_t end) {
     if (first >= end || end > size_ / kSectorBytes) return false;
+    if (persistent_) return file_.ZeroRange(first * kSectorBytes, end * kSectorBytes);
     writes_.erase(writes_.lower_bound(first), writes_.lower_bound(end));
     auto next = erases_.lower_bound(first);
     if (next != erases_.begin() && std::prev(next)->second >= first) --next;
@@ -67,6 +78,7 @@ bool VolatileSectorImage::Erase(uint64_t first, uint64_t end) {
 void VolatileSectorImage::SaveState(StateWriter& w) const {
     w.Write("image_size", size_);
     w.Write("image_identity", identity_);
+    w.Write("image_persistent", persistent_);
     w.Write("erases_count", static_cast<uint64_t>(erases_.size()));
     for (const auto& [first, end] : erases_) {
         w.Write("erase_first", first);
@@ -82,7 +94,10 @@ void VolatileSectorImage::SaveState(StateWriter& w) const {
 void VolatileSectorImage::RestoreState(StateReader& r) {
     uint64_t size = 0u, identity = 0u, count = 0u;
     r.Read("image_size", size);
+    bool persistent = false;
     r.Read("image_identity", identity);
+    r.Read("image_persistent", persistent);
+    if (persistent != persistent_) r.Reject("SD image writable mode differs from snapshot");
     if (size != size_ || identity != identity_) r.Reject("SD base image differs from snapshot");
     erases_.clear();
     writes_.clear();

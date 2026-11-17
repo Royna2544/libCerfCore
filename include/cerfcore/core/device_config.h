@@ -21,6 +21,7 @@ struct BundledUsbMedia {
     std::string file;
     std::string name;
     bool insert_on_launch = false;
+    bool writable = false;
     std::optional<SdCardCid> cid;
 };
 
