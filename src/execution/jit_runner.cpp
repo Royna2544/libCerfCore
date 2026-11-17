@@ -132,11 +132,11 @@ void JitRunner::RunGuest(Fatal& fatal) {
     while (!stop_requested_.load(std::memory_order_acquire)) {
 #if CERF_DEV_MODE
         const uint64_t t0 = ReadTimestampCounter();
-        const cerfengine::GuestEngine::RunStatus status = engine.Run();
+        const cerfengine::GuestEngine::RunStatus status = engine.RunSlice();
         probe.AddTsc(RateProbe::TimeCounter::JitRun, ReadTimestampCounter() - t0);
         probe.Inc(RateProbe::Counter::JitRuns);
 #else
-        const cerfengine::GuestEngine::RunStatus status = engine.Run();
+        const cerfengine::GuestEngine::RunStatus status = engine.RunSlice();
 #endif
         if (status == cerfengine::GuestEngine::RunStatus::kHalted) {
             fatal.Die("%s", bridge.Engine().LastHalt().detail);
