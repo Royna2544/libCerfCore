@@ -108,6 +108,22 @@ void Au1300GpicModel::Write(uint32_t offset, uint32_t value) {
         else regs_[offset] = value;
     }
     Publish();
+    for (const auto& listener : output_listeners_) listener();
+}
+
+bool Au1300GpicModel::DrivenLow(uint32_t pin) const {
+    if (pin >= 75u) host_.Fail("GPIC output query on input-only source=%u", pin);
+    return (regs_.at(0x1000u + pin * 4u) & 3u) == 2u;
+}
+
+void Au1300GpicModel::AddOutputListener(std::function<void()> listener) {
+    output_listeners_.push_back(std::move(listener));
+}
+
+void Au1300GpicModel::AddPinDeviceState(std::function<void(StateWriter&)> save,
+                                        std::function<void(StateReader&)> restore) {
+    device_save_.push_back(std::move(save));
+    device_restore_.push_back(std::move(restore));
 }
 
 void Au1300GpicModel::Pulse(uint32_t source) {
@@ -124,11 +140,13 @@ void Au1300GpicModel::Pulse(uint32_t source) {
 void Au1300GpicModel::SaveState(StateWriter& w) {
     au1300_state::SaveRegisters(w, regs_);
     w.Write("levels", levels_);
+    for (const auto& save : device_save_) save(w);
 }
 
 void Au1300GpicModel::RestoreState(StateReader& r) {
     au1300_state::RestoreRegisters(r, regs_);
     r.Read("levels", levels_);
+    for (const auto& restore : device_restore_) restore(r);
 }
 
 void Au1300GpicModel::PostRestore() {

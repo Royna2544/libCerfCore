@@ -2,7 +2,9 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <vector>
 
 namespace cerfcore {
 
@@ -19,6 +21,11 @@ public:
     void Pulse(uint32_t source);
     void SetLevel(uint32_t source, bool level);
 
+    bool DrivenLow(uint32_t pin) const;
+    void AddOutputListener(std::function<void()> listener);
+    void AddPinDeviceState(std::function<void(StateWriter&)> save,
+                           std::function<void(StateReader&)> restore);
+
     void SaveState(StateWriter& w);
     void RestoreState(StateReader& r);
     void PostRestore();
@@ -28,6 +35,9 @@ private:
     Au1300ModelHost& host_;
     std::map<uint32_t, uint32_t> regs_;
     std::array<bool, 128u> levels_{};
+    std::vector<std::function<void()>> output_listeners_;
+    std::vector<std::function<void(StateWriter&)>> device_save_;
+    std::vector<std::function<void(StateReader&)>> device_restore_;
 };
 
 }
