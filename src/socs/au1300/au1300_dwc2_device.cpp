@@ -14,7 +14,7 @@ namespace {
 
 class Au1300Dwc2Device : public Peripheral {
 public:
-    explicit Au1300Dwc2Device(CerfEmulator& emu) : Peripheral(emu) { Reset(false); }
+    explicit Au1300Dwc2Device(CerfEmulator& emu) : Peripheral(emu) { Reset(); }
     bool ShouldRegister() override { return emu_.Get<BoardContext>().GetSocId() == SocId::Au1300; }
     uint32_t MmioBase() const override { return 0x14022000u; }
     uint32_t MmioSize() const override { return 0x11000u; }
@@ -26,23 +26,28 @@ public:
         });
         emu_.Get<PeripheralDispatcher>().Register(this);
         auto& reset = emu_.Get<GuestCpuReset>();
-        reset.RegisterResetListener([this](ResetLineKind) { Reset(false); });
+        reset.RegisterResetListener([this](ResetLineKind) { Reset(); });
         reset.RegisterResetReleaseListener([this] { Publish(); });
     }
     uint32_t ReadWord(uint32_t address) override {
         const auto offset = address - MmioBase();
         switch (offset) {
         case 0u: return global_[0u] | 0x10000u;
-        case 4u: case 8u: case 0xCu: case 0x18u: case 0x24u: case 0x28u:
+        case 4u: case 8u: case 0x18u:
             return global_[offset / 4u];
+        case 0xCu: return ReadAfterGuestWrite(address, kUsbConfigWritten, global_[3u]);
         case 0x10u: return 0x80000000u;
         case 0x14u: return InterruptStatus();
-        case 0x800u: return device_[0u];
+        case 0x24u: return ReadAfterGuestWrite(address, kRxFifoSizeWritten, global_[9u]);
+        case 0x28u: return ReadAfterGuestWrite(address, kTxFifoSizeWritten, global_[10u]);
+        case 0x800u: return ReadAfterGuestWrite(address, kDeviceConfigWritten, device_[0u]);
         case 0x804u: return device_[1u];
         case 0x808u: return 1u;
         case 0x810u: case 0x814u: case 0x81Cu: return device_[(offset - 0x800u) / 4u];
         case 0x818u: return 0u;
-        default: HaltUnsupportedAccess("DWC2 ReadWord", address, 0u);
+        default:
+            if (uint32_t* reg = EndpointInterrupt(offset)) return *reg | kEndpointInterruptFixedBits;
+            HaltUnsupportedAccess("DWC2 ReadWord", address, 0u);
         }
     }
     void WriteWord(uint32_t address, uint32_t value) override {
@@ -57,47 +62,68 @@ public:
         case 0xCu:
             if ((value & (1u << 29u)) != 0u) HaltUnsupportedAccess("DWC2 host mode", address, value);
             global_[3u] = value & 0x5FFFFFFFu;
+            written_since_reset_ |= kUsbConfigWritten;
             break;
         case 0x10u:
             if ((value & ~0x800007FFu) != 0u) HaltUnsupportedAccess("DWC2 reset/flush", address, value);
-            if ((value & 1u) != 0u) Reset(true);
+            if ((value & 1u) != 0u) Reset();
             break;
         case 0x14u: global_[5u] &= ~value; break;
         case 0x18u: global_[6u] = value; break;
-        case 0x24u: global_[9u] = value & 0xFFFFu; break;
-        case 0x28u: global_[10u] = value; break;
-        case 0x800u: device_[0u] = value & 0x00FE1FF7u; break;
+        case 0x24u:
+            global_[9u] = value & 0xFFFFu;
+            written_since_reset_ |= kRxFifoSizeWritten;
+            break;
+        case 0x28u:
+            global_[10u] = value;
+            written_since_reset_ |= kTxFifoSizeWritten;
+            break;
+        case 0x800u:
+            device_[0u] = value & 0x00FE1FF7u;
+            written_since_reset_ |= kDeviceConfigWritten;
+            break;
         case 0x804u: WriteControl(address, value); break;
         case 0x810u: device_[4u] = value & 0x3FFu; break;
         case 0x814u: device_[5u] = value & 0x3FFu; break;
         case 0x81Cu: device_[7u] = value; break;
-        default: HaltUnsupportedAccess("DWC2 WriteWord", address, value);
+        default:
+            if (uint32_t* reg = EndpointInterrupt(offset)) {
+                *reg &= ~(value & (offset < 0xB00u ? kInEndpointInterruptClear : kOutEndpointInterruptClear));
+                break;
+            }
+            HaltUnsupportedAccess("DWC2 WriteWord", address, value);
         }
         Publish();
     }
     void SaveState(StateWriter& w) override {
         w.Write("global", global_);
         w.Write("device", device_);
+        w.Write("in_endpoint_interrupt", in_endpoint_interrupt_);
+        w.Write("out_endpoint_interrupt", out_endpoint_interrupt_);
+        w.Write("written_since_reset", written_since_reset_);
         w.Write("clock_enabled", clock_enabled_);
     }
     void RestoreState(StateReader& r) override {
         r.Read("global", global_);
         r.Read("device", device_);
+        r.Read("in_endpoint_interrupt", in_endpoint_interrupt_);
+        r.Read("out_endpoint_interrupt", out_endpoint_interrupt_);
+        r.Read("written_since_reset", written_since_reset_);
         r.Read("clock_enabled", clock_enabled_);
-        if ((global_[0u] & ~2u) != 0u || (device_[1u] & ~0x87Fu) != 0u) {
-            r.Reject("Au1300 DWC2 register state");
-        }
     }
     void PostRestore() override { Publish(); }
 
 private:
-    void Reset(bool preserve_usb_config) {
-        const auto usb_config = preserve_usb_config ? global_[3u] : 0u;
+    void Reset() {
         global_ = {};
         device_ = {};
-        global_[3u] = usb_config;
-        global_[9u] = 256u;
-        global_[10u] = 0x01000100u;
+        in_endpoint_interrupt_ = {};
+        out_endpoint_interrupt_ = {};
+        written_since_reset_ = 0u;
+    }
+    uint32_t ReadAfterGuestWrite(uint32_t address, uint32_t written_bit, uint32_t value) {
+        if ((written_since_reset_ & written_bit) == 0u) HaltUnsupportedAccess("DWC2 reset value", address, 0u);
+        return value;
     }
     void WriteControl(uint32_t address, uint32_t value) {
         if ((value & ~0xFFFu) != 0u || (value & 1u) != 0u) {
@@ -110,6 +136,12 @@ private:
         if ((value & 0x400u) != 0u) state &= ~8u;
         device_[1u] = state;
     }
+    uint32_t* EndpointInterrupt(uint32_t offset) {
+        if ((offset & 0x1Fu) != 8u) return nullptr;
+        if (offset >= 0x900u && offset < 0xB00u) return &in_endpoint_interrupt_[(offset - 0x900u) / 0x20u];
+        if (offset >= 0xB00u && offset < 0xD00u) return &out_endpoint_interrupt_[(offset - 0xB00u) / 0x20u];
+        return nullptr;
+    }
     uint32_t InterruptStatus() const {
         uint32_t status = global_[5u] | 0x20u;
         if ((device_[1u] & 4u) != 0u) status |= 0x40u;
@@ -120,9 +152,19 @@ private:
         control_->SetUdcInterrupt(clock_enabled_ && (global_[2u] & 1u) != 0u &&
                                   (InterruptStatus() & global_[6u]) != 0u);
     }
+    static constexpr uint32_t kInEndpointInterruptClear  = 0x297Fu;
+    static constexpr uint32_t kOutEndpointInterruptClear = 0x715Fu;
+    static constexpr uint32_t kEndpointInterruptFixedBits = 0x80u;
+    static constexpr uint32_t kUsbConfigWritten    = 1u;
+    static constexpr uint32_t kRxFifoSizeWritten   = 2u;
+    static constexpr uint32_t kTxFifoSizeWritten   = 4u;
+    static constexpr uint32_t kDeviceConfigWritten = 8u;
     Au1300UsbControl* control_ = nullptr;
     std::array<uint32_t, 11u> global_{};
     std::array<uint32_t, 8u> device_{};
+    std::array<uint32_t, 16u> in_endpoint_interrupt_{};
+    std::array<uint32_t, 16u> out_endpoint_interrupt_{};
+    uint32_t written_since_reset_ = 0u;
     bool clock_enabled_ = false;
 };
 
